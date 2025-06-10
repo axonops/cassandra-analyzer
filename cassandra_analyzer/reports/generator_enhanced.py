@@ -1,0 +1,1014 @@
+"""
+Enhanced report generator for analysis results with Montecristo-style formatting
+"""
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from ..models.recommendations import Severity
+
+
+class EnhancedReportGenerator:
+    """Generates enhanced analysis reports with better formatting and explanations"""
+    
+    def __init__(self, output_dir: Path):
+        self.output_dir = output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Set up Jinja2 environment
+        template_dir = Path(__file__).parent / "templates"
+        self.env = Environment(
+            loader=FileSystemLoader(str(template_dir)),
+            autoescape=False  # Disable autoescape for markdown output
+        )
+        
+        # Register custom filters
+        self.env.filters['format_number'] = self._format_number
+        self.env.filters['severity_icon'] = self._severity_icon
+        self.env.filters['severity_color'] = self._severity_color
+        self.env.filters['severity_text'] = self._severity_text
+        self.env.filters['get_attr'] = self._get_attr
+    
+    def generate(self, report_data: Dict[str, Any]) -> Path:
+        """Generate the analysis report"""
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        cluster_name = report_data["cluster_info"]["cluster_name"]
+        
+        # Generate enhanced markdown report
+        md_path = self.output_dir / f"cassandra_analysis_{cluster_name}_{timestamp}.md"
+        self._generate_enhanced_markdown(report_data, md_path)
+        
+        # Generate JSON report for programmatic access
+        json_path = self.output_dir / f"cassandra_analysis_{cluster_name}_{timestamp}.json"
+        self._generate_json(report_data, json_path)
+        
+        return md_path
+    
+    def _generate_enhanced_markdown(self, report_data: Dict[str, Any], output_path: Path):
+        """Generate enhanced markdown report"""
+        # Aggregate recommendations to avoid repetition
+        aggregated_results = {}
+        node_details = {}  # Store node-specific details for appendix
+        
+        for section_name, section_data in report_data["analysis_results"].items():
+            if section_data.get("error"):
+                aggregated_results[section_name] = section_data
+                continue
+            
+            recommendations = section_data.get("recommendations", [])
+            aggregated_recs = self._aggregate_recommendations(recommendations)
+            
+            # Store aggregated recommendations
+            aggregated_results[section_name] = {
+                **section_data,
+                "recommendations": aggregated_recs
+            }
+            
+            # Collect node details for appendix
+            for agg_rec in aggregated_recs:
+                if agg_rec.get("affected_nodes"):
+                    issue_key = f"{section_name}:{agg_rec['title']}"
+                    node_details[issue_key] = {
+                        "section": section_name,
+                        "title": agg_rec["title"],
+                        "affected_nodes": agg_rec["affected_nodes"]
+                    }
+        
+        # Process recommendations to group by priority
+        recommendations_by_priority = self._group_recommendations_by_priority(aggregated_results)
+        
+        # Calculate statistics
+        stats = self._calculate_statistics(report_data)
+        
+        # Prepare context for template
+        context = {
+            "cluster_info": report_data["cluster_info"],
+            "cluster_state": report_data["cluster_state"],
+            "analysis_results": aggregated_results,
+            "generation_time": datetime.utcnow().isoformat(),
+            "recommendations_by_priority": recommendations_by_priority,
+            "stats": stats,
+            "sections": self._prepare_sections(aggregated_results),
+            "node_details": node_details  # Add node details for appendix
+        }
+        
+        # Render template
+        template = self._get_enhanced_markdown_template()
+        content = template.render(**context)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+    
+    def _generate_json(self, report_data: Dict[str, Any], output_path: Path):
+        """Generate JSON report"""
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(report_data, f, indent=2, default=str)
+    
+    def _group_recommendations_by_priority(self, analysis_results: Dict[str, Any]) -> Dict[str, List[Dict]]:
+        """Group recommendations by priority level"""
+        grouped = {
+            "immediate": [],
+            "nearterm": [],
+            "longterm": []
+        }
+        
+        for section_name, section_data in analysis_results.items():
+            if section_data.get("error"):
+                continue
+                
+            for rec in section_data.get("recommendations", []):
+                # Handle both dict and object formats
+                if isinstance(rec, dict):
+                    rec_dict = {
+                        "section": section_name,
+                        "title": rec.get("title", "Unknown"),
+                        "description": rec.get("description", ""),
+                        "recommendation": rec.get("recommendation", ""),
+                        "current_value": rec.get("current_value"),
+                        "impact": rec.get("impact"),
+                        "category": rec.get("category", "general"),
+                        "context": rec.get("context", {})
+                    }
+                    severity = rec.get("severity", "INFO")
+                    if isinstance(severity, str):
+                        severity_str = severity.upper()
+                    else:
+                        severity_str = severity.value.upper()
+                else:
+                    rec_dict = {
+                        "section": section_name,
+                        "title": rec.title,
+                        "description": rec.description,
+                        "recommendation": rec.recommendation,
+                        "current_value": rec.current_value,
+                        "impact": rec.impact,
+                        "category": rec.category,
+                        "context": rec.context if hasattr(rec, 'context') else {}
+                    }
+                    severity_str = rec.severity.value.upper() if hasattr(rec.severity, 'value') else str(rec.severity).upper()
+                
+                if severity_str == "CRITICAL":
+                    grouped["immediate"].append(rec_dict)
+                elif severity_str == "WARNING":
+                    grouped["nearterm"].append(rec_dict)
+                else:
+                    grouped["longterm"].append(rec_dict)
+        
+        return grouped
+    
+    def _aggregate_recommendations(self, recommendations: List[Any]) -> List[Dict[str, Any]]:
+        """Aggregate similar recommendations to avoid repetition for large clusters"""
+        aggregated = {}
+        
+        for rec in recommendations:
+            # Extract key fields
+            if isinstance(rec, dict):
+                title = rec.get("title", "Unknown Issue")
+                severity = rec.get("severity", "INFO")
+                description_base = rec.get("description", "")
+                # Remove node-specific parts from description for grouping
+                if "Node " in description_base:
+                    import re
+                    # Remove node identifiers to create a generic description
+                    description_base = re.sub(r'Node [^\s]+ ', 'Node(s) ', description_base)
+                    description_base = re.sub(r'nodes? [^\s]+ ', 'affected node(s) ', description_base)
+                
+                # Special handling for swap space warnings to aggregate them
+                if title == "Swap Usage Detected" and "swap space" in description_base:
+                    # Remove the specific percentage to allow aggregation
+                    description_base = re.sub(r'is using \d+\.\d+% of swap space', 'is using swap space', description_base)
+                
+                impact = rec.get("impact", "")
+                recommendation = rec.get("recommendation", "")
+                current_value = rec.get("current_value", "")
+                context = rec.get("context", {})
+                node_id = context.get("node_id", "")
+                
+            else:
+                title = rec.title
+                severity = rec.severity
+                description_base = rec.description
+                # Remove node-specific parts from description for grouping
+                if "Node " in description_base:
+                    import re
+                    description_base = re.sub(r'Node [^\s]+ ', 'Node(s) ', description_base)
+                    description_base = re.sub(r'nodes? [^\s]+ ', 'affected node(s) ', description_base)
+                
+                # Special handling for swap space warnings to aggregate them
+                if title == "Swap Usage Detected" and "swap space" in description_base:
+                    # Remove the specific percentage to allow aggregation
+                    description_base = re.sub(r'is using \d+\.\d+% of swap space', 'is using swap space', description_base)
+                
+                impact = rec.impact
+                recommendation = rec.recommendation
+                current_value = rec.current_value
+                context = rec.context if hasattr(rec, 'context') else {}
+                node_id = context.get("node_id", "")
+            
+            # Create aggregation key based on title and base description
+            agg_key = f"{title}|{description_base}"
+            
+            if agg_key not in aggregated:
+                aggregated[agg_key] = {
+                    "title": title,
+                    "severity": severity,
+                    "description_base": description_base,
+                    "impact": impact,
+                    "recommendation": recommendation,
+                    "current_value": current_value,
+                    "affected_nodes": [],
+                    "context": context,
+                    "count": 0
+                }
+            
+            # Add node to affected list if it has a node_id
+            if node_id:
+                node_info = {
+                    "node_id": node_id,
+                    "details": context
+                }
+                aggregated[agg_key]["affected_nodes"].append(node_info)
+            aggregated[agg_key]["count"] += 1
+        
+        # Convert to list and update descriptions with counts
+        result = []
+        for agg_data in aggregated.values():
+            if agg_data["count"] > 1:
+                # Special handling for swap space to show range
+                if agg_data["title"] == "Swap Usage Detected" and "swap space" in agg_data["description_base"]:
+                    # Extract swap percentages from all affected nodes
+                    swap_percentages = []
+                    for node_info in agg_data["affected_nodes"]:
+                        swap_pct = node_info["details"].get("swap_percentage", 0)
+                        if swap_pct > 0:
+                            swap_percentages.append(swap_pct)
+                    
+                    if swap_percentages:
+                        min_swap = min(swap_percentages)
+                        max_swap = max(swap_percentages)
+                        if min_swap == max_swap:
+                            agg_data["description"] = f"Node(s) is using {min_swap:.1f}% of swap space ({agg_data['count']} nodes affected)"
+                        else:
+                            agg_data["description"] = f"Node(s) is using {min_swap:.1f}-{max_swap:.1f}% of swap space ({agg_data['count']} nodes affected)"
+                    else:
+                        agg_data["description"] = f"{agg_data['description_base']} ({agg_data['count']} nodes affected)"
+                else:
+                    agg_data["description"] = f"{agg_data['description_base']} ({agg_data['count']} nodes affected)"
+            else:
+                agg_data["description"] = agg_data["description_base"]
+            result.append(agg_data)
+        
+        return result
+    
+    def _calculate_statistics(self, report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate report statistics"""
+        total_recommendations = 0
+        critical_count = 0
+        warning_count = 0
+        info_count = 0
+        
+        for section_name, section_data in report_data["analysis_results"].items():
+            if section_data.get("error"):
+                continue
+                
+            for rec in section_data.get("recommendations", []):
+                total_recommendations += 1
+                
+                # Handle both dict and object formats
+                if isinstance(rec, dict):
+                    severity = rec.get("severity", "INFO")
+                    if isinstance(severity, str):
+                        severity_str = severity.upper()
+                    else:
+                        severity_str = severity.value.upper() if hasattr(severity, 'value') else str(severity).upper()
+                else:
+                    severity_str = rec.severity.value.upper() if hasattr(rec.severity, 'value') else str(rec.severity).upper()
+                
+                if severity_str == "CRITICAL":
+                    critical_count += 1
+                elif severity_str == "WARNING":
+                    warning_count += 1
+                else:
+                    info_count += 1
+        
+        return {
+            "total_recommendations": total_recommendations,
+            "critical_count": critical_count,
+            "warning_count": warning_count,
+            "info_count": info_count
+        }
+    
+    def _prepare_sections(self, analysis_results: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Prepare sections with enhanced metadata"""
+        sections = []
+        
+        section_metadata = {
+            "infrastructure": {
+                "icon": "🖥️",
+                "title": "Infrastructure",
+                "order": 1,
+                "brief": "Hardware and OS configuration supporting your cluster"
+            },
+            "configuration": {
+                "icon": "⚙️",
+                "title": "Configuration",
+                "order": 2,
+                "brief": "Cassandra settings and JVM parameters"
+            },
+            "operations": {
+                "icon": "📊",
+                "title": "Operations",
+                "order": 3,
+                "brief": "Performance metrics and operational health"
+            },
+            "operations_logs": {
+                "icon": "📝",
+                "title": "Operations Logs",
+                "order": 4,
+                "brief": "Log analysis and error patterns"
+            },
+            "datamodel": {
+                "icon": "📐",
+                "title": "Data Model",
+                "order": 5,
+                "brief": "Schema design and table optimization"
+            },
+            "security": {
+                "icon": "🔐",
+                "title": "Security",
+                "order": 6,
+                "brief": "Authentication, authorization, and encryption"
+            },
+            "extended_configuration": {
+                "icon": "🔧",
+                "title": "Extended Configuration",
+                "order": 7,
+                "brief": "Advanced settings and fine-tuning"
+            }
+        }
+        
+        for section_name, section_data in analysis_results.items():
+            metadata = section_metadata.get(section_name, {
+                "icon": "📋",
+                "title": section_name.replace("_", " ").title(),
+                "order": 99,
+                "brief": "Additional analysis"
+            })
+            
+            sections.append({
+                "name": section_name,
+                "icon": metadata["icon"],
+                "title": metadata["title"],
+                "brief": metadata["brief"],
+                "data": section_data,
+                "order": metadata["order"]
+            })
+        
+        # Sort by order
+        sections.sort(key=lambda x: x["order"])
+        return sections
+    
+    def _format_number(self, value) -> str:
+        """Format numbers with appropriate units"""
+        if value is None:
+            return "N/A"
+        
+        try:
+            num = float(value)
+            if num >= 1_000_000_000:
+                return f"{num/1_000_000_000:.1f}B"
+            elif num >= 1_000_000:
+                return f"{num/1_000_000:.1f}M"
+            elif num >= 1_000:
+                return f"{num/1_000:.1f}K"
+            else:
+                return str(int(num))
+        except:
+            return str(value)
+    
+    def _severity_icon(self, severity) -> str:
+        """Get icon for severity level"""
+        if severity is None:
+            return "⚪"
+            
+        if hasattr(severity, 'value'):
+            severity_str = severity.value
+        else:
+            severity_str = str(severity)
+            
+        icons = {
+            "CRITICAL": "🔴",
+            "WARNING": "🟡",
+            "INFO": "🔵"
+        }
+        return icons.get(severity_str.upper(), "⚪")
+    
+    def _severity_color(self, severity) -> str:
+        """Get color for severity level"""
+        if hasattr(severity, 'value'):
+            severity = severity.value
+            
+        colors = {
+            "CRITICAL": "red",
+            "WARNING": "yellow",
+            "INFO": "blue"
+        }
+        return colors.get(severity.upper(), "gray")
+    
+    def _severity_text(self, severity) -> str:
+        """Get text representation of severity level"""
+        if severity is None:
+            return "INFO"
+            
+        if hasattr(severity, 'value'):
+            return severity.value.upper()
+        else:
+            return str(severity).upper()
+    
+    def _get_attr(self, obj, attr_name, default=None):
+        """Get attribute from object or dict"""
+        if isinstance(obj, dict):
+            return obj.get(attr_name, default)
+        else:
+            return getattr(obj, attr_name, default)
+    
+    def _get_enhanced_markdown_template(self) -> str:
+        """Get the enhanced markdown template"""
+        return self.env.from_string("""
+# Cassandra Cluster Health Assessment
+
+**Cluster:** {{ cluster_info.cluster_name }}  
+**Organization:** {{ cluster_info.organization }}  
+**Generated:** {{ generation_time }}
+
+---
+
+## Executive Summary
+
+{% if stats.critical_count > 0 %}
+### 🔴 **Critical Issues Detected**
+
+Your cluster has **{{ stats.critical_count }} critical issue(s)** requiring immediate attention. Critical issues indicate:
+- Severe misconfigurations that could lead to failures
+- Resource constraints that may cause node instability  
+- Configuration conflicts preventing proper cluster operation
+
+**Action Required:** Review critical issues below and implement fixes as soon as possible.
+
+{% elif stats.warning_count > 0 %}
+### 🟡 **Performance Optimization Needed**
+
+Your cluster has **{{ stats.warning_count }} warning(s)** that should be addressed for optimal performance. While not immediately critical, these can lead to:
+- Reduced performance and higher latencies
+- Increased operational costs
+- Risk of escalation to critical issues
+
+**Action Required:** Plan to address these warnings within 1-2 weeks.
+
+{% else %}
+### ✅ **Healthy Cluster**
+
+Excellent! No critical issues or warnings detected. Your cluster is well-configured and operating within recommended parameters.
+
+**Next Steps:** Review informational recommendations for further optimization opportunities.
+{% endif %}
+
+### Key Metrics
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Total Nodes | {{ cluster_state.get_total_nodes() if cluster_state.get_total_nodes else 'N/A' }} | {% if cluster_state.get_total_nodes() and cluster_state.get_total_nodes() >= 3 %}✅ Good{% else %}⚠️ Review{% endif %} |
+| Active Nodes | {{ cluster_state.get_active_nodes() if cluster_state.get_active_nodes else 'N/A' }} | {% if cluster_state.get_active_nodes() == cluster_state.get_total_nodes() %}✅ All Active{% else %}🔴 Some Down{% endif %} |
+| Datacenters | {{ cluster_state.get_datacenters() | length if cluster_state.get_datacenters() else 'N/A' }} | {% if cluster_state.get_datacenters() and cluster_state.get_datacenters() | length > 1 %}✅ Multi-DC{% else %}⚠️ Single DC{% endif %} |
+| Recommendations | {{ stats.total_recommendations }} | {{ stats.critical_count }} Critical, {{ stats.warning_count }} Warnings, {{ stats.info_count }} Info |
+
+---
+
+## Summary of Findings
+
+{% if recommendations_by_priority.immediate %}
+### Immediate Issues
+
+These critical issues require immediate attention to prevent service disruption or data loss.
+
+| Issue | Section | Description | Action Required |
+|-------|---------|-------------|----------------|
+{% for rec in recommendations_by_priority.immediate %}| **{{ rec.title }}** | {{ rec.section.replace('_', ' ').title() }} | {{ rec.description }}{% if rec.context.get('config_location') %} ({{ rec.context.get('config_location') }}){% endif %} | {{ rec.recommendation if rec.recommendation else 'Review immediately' }} |
+{% endfor %}
+{% endif %}
+
+{% if recommendations_by_priority.nearterm %}
+### Near Term Changes
+
+These warnings should be addressed within your next maintenance window.
+
+| Issue | Section | Description | Priority |
+|-------|---------|-------------|----------|
+{% for rec in recommendations_by_priority.nearterm %}| **{{ rec.title }}** | {{ rec.section.replace('_', ' ').title() }} | {{ rec.description }}{% if rec.context.get('config_location') %} ({{ rec.context.get('config_location') }}){% endif %} | {{ rec.severity }} |
+{% endfor %}
+{% endif %}
+
+{% if recommendations_by_priority.longterm %}
+### Long Term Optimizations
+
+These informational items represent optimization opportunities.
+
+| Optimization | Section | Description | Benefit |
+|--------------|---------|-------------|----------|
+{% for rec in recommendations_by_priority.longterm %}| {{ rec.title }} | {{ rec.section.replace('_', ' ').title() }} | {{ rec.description }}{% if rec.context.get('config_location') %} ({{ rec.context.get('config_location') }}){% endif %} | {{ rec.impact if rec.impact else 'Performance improvement' }} |
+{% endfor %}
+{% endif %}
+
+---
+
+## Cluster Overview
+
+### Topology Summary
+
+Your Cassandra cluster consists of {{ cluster_state.get_total_nodes() if cluster_state.get_total_nodes() else 'unknown number of' }} nodes distributed across {{ cluster_state.get_datacenters() | length if cluster_state.get_datacenters() else 'unknown' }} datacenter(s).
+
+{% if cluster_state.nodes %}
+{# Group nodes by datacenter and rack for counting #}
+{% set dc_rack_counts = {} %}
+{% set dc_seed_counts = {} %}
+{% set dc_versions = {} %}
+{# First extract all seed hostnames from seed provider #}
+{% set all_seed_hostnames = [] %}
+{% for node_id, temp_node in cluster_state.nodes.items() %}
+  {% set seed_provider = temp_node.Details.get('comp_seed_provider', '') %}
+  {% if seed_provider and 'seeds=' in seed_provider and not all_seed_hostnames %}
+    {% set seeds_part = seed_provider.split('seeds=')[1].split('}')[0] %}
+    {% for seed in seeds_part.split(',') %}
+      {% set _ = all_seed_hostnames.append(seed.strip()) %}
+    {% endfor %}
+  {% endif %}
+{% endfor %}
+{% for node_id, node in cluster_state.nodes.items() %}
+  {% set dc = node.DC if node.DC else 'Unknown' %}
+  {% set rack = node.rack if node.rack else 'default' %}
+  {% set node_hostname = node.Details.get('host_Hostname', '') %}
+  {% set is_seed = node_hostname in all_seed_hostnames %}
+  {% set version = node.Details.get('comp_releaseVersion', node.Details.get('release_version', 'Unknown')) %}
+  
+  {# Count nodes per DC/rack #}
+  {% if dc not in dc_rack_counts %}
+    {% set _ = dc_rack_counts.update({dc: {}}) %}
+  {% endif %}
+  {% if rack not in dc_rack_counts[dc] %}
+    {% set _ = dc_rack_counts[dc].update({rack: 0}) %}
+  {% endif %}
+  {% set _ = dc_rack_counts[dc].update({rack: dc_rack_counts[dc][rack] + 1}) %}
+  
+  {# Count seeds per DC #}
+  {% if dc not in dc_seed_counts %}
+    {% set _ = dc_seed_counts.update({dc: 0}) %}
+  {% endif %}
+  {% if is_seed %}
+    {% set _ = dc_seed_counts.update({dc: dc_seed_counts[dc] + 1}) %}
+  {% endif %}
+  
+  {# Track versions per DC #}
+  {% if dc not in dc_versions %}
+    {% set _ = dc_versions.update({dc: []}) %}
+  {% endif %}
+  {% if version not in dc_versions[dc] %}
+    {% set _ = dc_versions[dc].append(version) %}
+  {% endif %}
+{% endfor %}
+
+| Datacenter | Rack Configuration | Total Nodes | Seed Nodes | Versions |
+|------------|-------------------|-------------|------------|----------|
+{% for dc in dc_rack_counts.keys() | sort %}{% set racks = dc_rack_counts[dc] %}{% set total_dc_nodes = racks.values() | sum %}{% set versions_list = dc_versions[dc] | sort %}| {{ dc }} | {% if racks | length > 1 %}{{ racks | length }} racks ({% for rack, count in racks.items() | sort %}{{ rack }}: {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}){% else %}{% for rack, count in racks.items() %}{{ rack }}{% endfor %}{% endif %} | {{ total_dc_nodes }} | {{ dc_seed_counts.get(dc, 0) }} | {{ versions_list | join(', ') }} |
+{% endfor %}
+
+**Cluster Health**: {% if cluster_state.get_active_nodes() == cluster_state.get_total_nodes() %}✅ All nodes active{% else %}⚠️ {{ cluster_state.get_total_nodes() - cluster_state.get_active_nodes() }} node(s) down{% endif %}
+{% endif %}
+
+---
+
+_**Best Practice**: Each datacenter should have at least 2 seed nodes for optimal cluster discovery and gossip propagation. Ensure seed nodes are well-distributed across racks._
+
+---
+
+### Keyspaces
+
+{% if cluster_state.keyspaces %}
+{% set app_keyspaces = [] %}
+{% for ks_name, ks in cluster_state.keyspaces.items() %}
+    {% if not ks_name.startswith('system') %}
+        {% set _ = app_keyspaces.append((ks_name, ks)) %}
+    {% endif %}
+{% endfor %}
+
+Your cluster contains **{{ app_keyspaces | length }} application keyspace(s)** storing business data.
+
+| Keyspace | Tables | Type |
+|----------|--------|------|
+{% for ks_name, ks in cluster_state.keyspaces.items() %}| {{ ks_name }} | {{ ks.Tables | length if ks.Tables else 0 }} | {% if ks_name.startswith('system') %}System{% else %}Application{% endif %} |
+{% endfor %}
+{% endif %}
+
+---
+
+{% for section in sections %}
+## {{ section.icon }} {{ section.title }}
+
+{{ section.brief }}
+
+{% if section.data.error %}
+⚠️ **Analysis Error:** {{ section.data.error }}
+
+_Unable to complete {{ section.title }} analysis. This may indicate missing permissions or incomplete data collection._
+
+{% elif section.data.recommendations %}
+
+{% if section.name == 'infrastructure' %}
+### Infrastructure Summary
+
+| Component | Status | Issues Found | Priority |
+|-----------|---------|--------------|----------|
+{% set issue_counts = {} %}{% for rec in section.data.recommendations %}{% set component = rec.context.get('component', 'General') %}{% if component not in issue_counts %}{% set _ = issue_counts.update({component: []}) %}{% endif %}{% set _ = issue_counts[component].append(rec) %}{% endfor %}{% for component, recs in issue_counts.items() %}| {{ component }} | {% if recs | selectattr('severity', 'equalto', 'critical') | list %}🔴 Critical{% elif recs | selectattr('severity', 'equalto', 'warning') | list %}🟡 Warning{% else %}🔵 Info{% endif %} | {{ recs | length }} | {{ recs | selectattr('severity', 'equalto', 'critical') | list | length }} critical, {{ recs | selectattr('severity', 'equalto', 'warning') | list | length }} warnings |
+{% endfor %}
+
+### Detailed Findings
+
+| Issue | Component | Nodes Affected | Current Value | Recommended Value | Impact |
+|-------|-----------|----------------|---------------|-------------------|---------|
+{% for rec in section.data.recommendations %}| {{ rec | get_attr('title', 'Unknown Issue') }} | {{ rec.context.get('component', 'General') }} | {{ rec.count if rec.count else 1 }} | {{ rec | get_attr('current_value', 'N/A') }} | {{ rec.context.get('recommended_value', rec | get_attr('recommendation', 'See recommendation')) }} | {{ rec | get_attr('severity') | severity_text }} |
+{% endfor %}
+
+{% elif section.name == 'operations' %}
+### Operations Metrics Summary
+
+| Metric | Current State | Threshold | Status |
+|--------|---------------|-----------|--------|
+{% for rec in section.data.recommendations %}| {{ rec | get_attr('title', 'Unknown Metric') }} | {{ rec | get_attr('current_value', 'N/A') }} | {{ rec.context.get('threshold', 'N/A') }} | {{ rec | get_attr('severity') | severity_icon }} {{ rec | get_attr('severity') | severity_text }} |
+{% endfor %}
+
+{% elif section.name == 'operations_logs' %}
+### Log Analysis Summary
+
+| Event Type | Nodes Affected | Total Occurrences | Rate (per hour) | Severity |
+|------------|----------------|-------------------|-----------------|----------|
+{% for rec in section.data.recommendations %}| {{ rec | get_attr('title', 'Unknown Event') }}{% if 'Batch' in rec.title and 'Detected via Histogram' in rec.title %} †{% endif %} | {{ rec.count if rec.count else 1 }} | {{ rec.context.get('total_count', 'N/A') }} | {{ rec.context.get('hourly_rate', 'N/A') }} | {{ rec | get_attr('severity') | severity_icon }} {{ rec | get_attr('severity') | severity_text }} |
+{% endfor %}
+
+{% set batch_warnings = [] %}
+{% for rec in section.data.recommendations %}
+  {% if 'Batch' in rec.title and 'Histogram' in rec.title %}
+    {% set _ = batch_warnings.append(rec) %}
+  {% endif %}
+{% endfor %}
+{% if batch_warnings %}
+† **Important Note about Batch Activity Detection**: The AxonOps histogram API detects batch-related activity patterns, but individual batch warning log entries may not be retrievable through the logs search API. This is a known limitation. To verify batch warnings:
+- Check your Cassandra system.log files directly for "Batch" warnings
+- Monitor batch size metrics: `batch_size_warn_threshold_in_kb` and `batch_size_fail_threshold_in_kb` in cassandra.yaml
+- Use nodetool to check batch performance metrics
+{% endif %}
+
+{% elif section.name == 'configuration' %}
+### Configuration Analysis Summary
+
+| Configuration Area | Status | Issues Found | Priority |
+|-------------------|---------|--------------|----------|
+{% set config_areas = {} %}{% for rec in section.data.recommendations %}{% set area = 'JVM Settings' if 'jvm' in rec.title.lower() or 'heap' in rec.title.lower() or 'gc' in rec.title.lower() else 'Cassandra Settings' if 'authenticat' in rec.title.lower() or 'disk' in rec.title.lower() or 'commitlog' in rec.title.lower() else 'Configuration Consistency' %}{% if area not in config_areas %}{% set _ = config_areas.update({area: []}) %}{% endif %}{% set _ = config_areas[area].append(rec) %}{% endfor %}{% for area, recs in config_areas.items() %}| {{ area }} | {% if recs | selectattr('severity', 'equalto', 'critical') | list %}🔴 Critical{% elif recs | selectattr('severity', 'equalto', 'warning') | list %}🟡 Warning{% else %}🔵 Info{% endif %} | {{ recs | length }} | {{ recs | selectattr('severity', 'equalto', 'critical') | list | length }} critical, {{ recs | selectattr('severity', 'equalto', 'warning') | list | length }} warnings |
+{% endfor %}
+
+### Detailed Configuration Issues
+
+| Issue | Area | Current State | Config Location | Impact | Recommendation |
+|-------|------|---------------|-----------------|---------|----------------|
+{% for rec in section.data.recommendations %}| {{ rec | get_attr('title', 'Unknown Issue') }}{% if rec.title == 'Multiple Configuration Mismatches Detected' %} (See Appendix){% endif %} | {% if 'jvm' in rec.title.lower() or 'heap' in rec.title.lower() or 'gc' in rec.title.lower() %}JVM{% elif 'authenticat' in rec.title.lower() or 'authoriz' in rec.title.lower() %}Security{% elif 'mismatch' in rec.title.lower() %}Consistency{% else %}General{% endif %} | {{ rec | get_attr('current_value', rec.description[:50] + '...' if rec.description and rec.description|length > 50 else rec.description) }} | {{ rec.context.get('config_location', 'cassandra.yaml') }} | {{ rec | get_attr('severity') | severity_icon }} {{ rec | get_attr('impact', 'See description') }} | {{ rec | get_attr('recommendation', 'Review settings') }} |
+{% endfor %}
+
+{% elif section.name == 'extended_configuration' %}
+_All extended configuration settings are found in **cassandra.yaml** unless otherwise noted._
+
+### Extended Configuration Summary
+
+| Setting Category | Issues | Severity | Action Required |
+|-----------------|--------|----------|-----------------|
+{% set ext_config_areas = {} %}{% for rec in section.data.recommendations %}{% set category = 'Thread Pools' if 'thread' in rec.title.lower() or 'flush' in rec.title.lower() else 'Network' if 'snitch' in rec.title.lower() else 'Memory' if 'memtable' in rec.title.lower() or 'cache' in rec.title.lower() else 'Compaction' if 'compact' in rec.title.lower() else 'Other' %}{% if category not in ext_config_areas %}{% set _ = ext_config_areas.update({category: []}) %}{% endif %}{% set _ = ext_config_areas[category].append(rec) %}{% endfor %}{% for category, recs in ext_config_areas.items() %}| {{ category }} | {{ recs | length }} | {% if recs | selectattr('severity', 'equalto', 'critical') | list %}🔴 Critical{% elif recs | selectattr('severity', 'equalto', 'warning') | list %}🟡 Warning{% else %}🔵 Info{% endif %} | {% set recommendation_text = recs[0].recommendation if recs and recs[0].recommendation else 'Review configuration' %}{{ recommendation_text.replace(' in cassandra.yaml', '').replace(' in JVM startup flags', '') }} |
+{% endfor %}
+
+### Extended Configuration Details
+
+| Parameter | Node/Cluster | Current Value | Recommended | Impact |
+|-----------|--------------|---------------|-------------|---------|
+{% for rec in section.data.recommendations %}{% set node_id = rec.context.get('node_id') %}{% if node_id and cluster_state.nodes.get(node_id) %}{% set node = cluster_state.nodes.get(node_id) %}{% set node_display = node.Details.get('host_Hostname', 'unknown') + '/' + node.Details.get('listen_address', node.Details.get('comp_listen_address', node_id[:8] + '...')) %}{% else %}{% set node_display = 'Cluster-wide' %}{% endif %}| {{ rec | get_attr('title', 'Unknown Parameter') }} | {{ node_display }} | {{ rec | get_attr('current_value', 'N/A') }} | {{ rec.context.get('recommended_value', rec | get_attr('recommendation', 'See details')) }} | {{ rec | get_attr('severity') | severity_text }} |
+{% endfor %}
+
+{% elif section.name == 'datamodel' %}
+### Data Model Analysis Summary
+
+| Category | Issues Found | Critical | Warnings | Info |
+|----------|--------------|----------|----------|------|
+{% set datamodel_categories = {} %}{% for rec in section.data.recommendations %}{% set category = 'Table Design' if 'partition' in rec.title.lower() or 'clustering' in rec.title.lower() or 'primary key' in rec.title.lower() else 'Tombstones' if 'tombstone' in rec.title.lower() else 'Compaction' if 'compact' in rec.title.lower() or 'sstable' in rec.title.lower() else 'Secondary Indexes' if 'index' in rec.title.lower() else 'Materialized Views' if 'view' in rec.title.lower() else 'Replication' if 'replication' in rec.title.lower() or 'consistency' in rec.title.lower() else 'Collections' if 'collection' in rec.title.lower() or 'list' in rec.title.lower() or 'map' in rec.title.lower() or 'set' in rec.title.lower() else 'Performance' %}{% if category not in datamodel_categories %}{% set _ = datamodel_categories.update({category: []}) %}{% endif %}{% set _ = datamodel_categories[category].append(rec) %}{% endfor %}{% for category, recs in datamodel_categories.items() %}| {{ category }} | {{ recs | length }} | {{ recs | selectattr('severity', 'equalto', 'critical') | list | length }} | {{ recs | selectattr('severity', 'equalto', 'warning') | list | length }} | {{ recs | selectattr('severity', 'equalto', 'info') | list | length }} |
+{% endfor %}
+
+### Table-Specific Issues
+
+| Keyspace.Table | Issue Type | Current State | Impact | Action Required |
+|----------------|------------|---------------|---------|-----------------|
+{% for rec in section.data.recommendations %}{% if rec.context.get('keyspace') or rec.context.get('table') %}| {{ rec.context.get('keyspace', '') }}{% if rec.context.get('keyspace') and rec.context.get('table') %}.{% endif %}{{ rec.context.get('table', '') }} | {{ rec | get_attr('title', 'Unknown Issue') }} | {{ rec | get_attr('current_value', 'See details') }} | {{ rec | get_attr('severity') | severity_icon }} {{ rec | get_attr('impact', 'Performance impact') }} | {{ rec | get_attr('recommendation', 'Review design') }} |
+{% endif %}{% endfor %}
+
+### General Data Model Issues
+
+| Issue | Description | Severity | Recommendation |
+|-------|-------------|----------|----------------|
+{% for rec in section.data.recommendations %}{% if not rec.context.get('keyspace') and not rec.context.get('table') %}| {{ rec | get_attr('title', 'Unknown Issue') }} | {{ rec | get_attr('description', 'No description') }}{% if rec.title == 'Unused Tables Detected' and rec.context.get('unused_tables') %} (See Appendix for table list){% elif rec.title == 'Collection Types Usage' and rec.context.get('collection_tables') %} (See Appendix for schemas){% endif %} | {{ rec | get_attr('severity') | severity_icon }} {{ rec | get_attr('severity') | severity_text }} | {{ rec | get_attr('recommendation', 'Review data model') }} |
+{% endif %}{% endfor %}
+
+{% elif section.name == 'security' %}
+_Security settings are configured in **cassandra.yaml** unless otherwise noted._
+
+### Security Configuration Overview
+
+| Security Area | Status | Configuration | Risk Level |
+|---------------|--------|---------------|------------|
+{% set auth_enabled = section.data.summary.get('auth_enabled', False) %}{% set authz_enabled = section.data.summary.get('authz_enabled', False) %}{% set authenticator = section.data.summary.get('authenticator', 'Unknown') %}{% set authorizer = section.data.summary.get('authorizer', 'Unknown') %}| Authentication | {{ '✅ Enabled' if auth_enabled else '❌ Disabled' }} | {{ authenticator }} | {{ '✅ Low' if auth_enabled else '🔴 High' }} |
+| Authorization | {{ '✅ Enabled' if authz_enabled else '❌ Disabled' }} | {{ authorizer }} | {{ '✅ Low' if authz_enabled else '🔴 High' }} |
+| Encryption in Transit | ❓ Unknown | Not checked | 🟡 Medium |
+| Encryption at Rest | ❓ Unknown | Not checked | 🟡 Medium |
+
+### Security Issues Detail
+
+| Issue | Current State | Risk | Impact | Action Required |
+|-------|---------------|------|---------|-----------------|
+{% for rec in section.data.recommendations %}| {{ rec | get_attr('title', 'Unknown Issue') }} | {{ rec | get_attr('current_value', 'See description') }} | {{ rec | get_attr('severity') | severity_icon }} {{ rec | get_attr('severity') | severity_text }} | {{ rec | get_attr('impact', 'Security risk') }} | {{ rec | get_attr('recommendation', 'Enable security feature') }} |
+{% endfor %}
+
+{% else %}
+{% for rec in section.data.recommendations %}
+### {{ rec | get_attr('title', 'Unknown Issue') }}
+
+**Current State:** {{ rec | get_attr('current_value', 'See details below') }}  
+**Severity:** {{ rec | get_attr('severity') | severity_icon }} {{ rec | get_attr('severity') | severity_text }}
+{% if rec.context.get('config_location') %}
+**Configuration Location:** {{ rec.context.get('config_location') }}
+{% endif %}
+
+{{ rec | get_attr('description', 'No description available') }}
+
+{% if rec | get_attr('impact') %}
+**Impact if not addressed:** {{ rec | get_attr('impact') }}
+{% endif %}
+
+**Recommendation:** {{ rec | get_attr('recommendation', 'No recommendation provided') }}
+
+{% if section.name == 'configuration' and 'heap' in (rec | get_attr('title', '')).lower() %}
+---
+
+_**Noted for reference**: JVM heap size directly affects how much data Cassandra can cache in memory. Too small leads to frequent GC, too large causes long GC pauses._
+
+---
+{% elif section.name == 'datamodel' and 'tombstone' in (rec | get_attr('title', '')).lower() %}
+---
+
+_**Consideration**: Tombstones are deletion markers that remain in the system until compaction. High tombstone counts significantly impact read performance._
+
+---
+{% elif section.name == 'security' and (rec | get_attr('severity') | severity_text) == 'CRITICAL' %}
+---
+
+**⚠️ Security Warning**: This issue represents a significant security risk and should be addressed immediately to prevent unauthorized access or data breaches.
+
+---
+{% endif %}
+
+{% endfor %}
+{% endif %}
+
+{% else %}
+✅ **No issues detected** in {{ section.title.lower() }} configuration.
+
+{% if section.name == 'security' %}
+---
+
+_**Noted for reference**: Even with no issues detected, regularly review security settings and ensure authentication/authorization are properly configured for production environments._
+
+---
+{% endif %}
+{% endif %}
+
+{% endfor %}
+
+---
+
+## Next Steps
+
+1. **Address Critical Issues** - Resolve any {{ stats.critical_count }} critical items immediately
+2. **Plan Warning Fixes** - Schedule {{ stats.warning_count }} warning items for next maintenance
+3. **Review Optimizations** - Consider {{ stats.info_count }} informational recommendations
+4. **Monitor Progress** - Re-run analysis after changes to verify improvements
+5. **Schedule Regular Checks** - Plan quarterly health assessments
+
+---
+
+## Appendix: Understanding Cassandra Concepts
+
+### Key Terms
+
+**Node**: A single server running Cassandra  
+**Datacenter**: Logical grouping of nodes (often geographic)  
+**Keyspace**: Top-level data container (like a database)  
+**Replication Factor (RF)**: Number of data copies across nodes  
+**Consistency Level**: How many nodes must respond to queries  
+**Compaction**: Process of merging and cleaning data files  
+**Tombstone**: Marker indicating deleted data  
+**Partition**: Unit of data distribution across nodes  
+
+## Appendix: Cluster Node Details
+
+### Complete Node List
+
+This section provides a detailed view of all nodes in the cluster.
+
+{% if cluster_state.nodes %}
+{# Prepare node details with all information #}
+{# First extract all seed hostnames #}
+{% set all_seed_hostnames = [] %}
+{% for node_id, temp_node in cluster_state.nodes.items() %}
+  {% set seed_provider = temp_node.Details.get('comp_seed_provider', '') %}
+  {% if seed_provider and 'seeds=' in seed_provider and not all_seed_hostnames %}
+    {% set seeds_part = seed_provider.split('seeds=')[1].split('}')[0] %}
+    {% for seed in seeds_part.split(',') %}
+      {% set _ = all_seed_hostnames.append(seed.strip()) %}
+    {% endfor %}
+  {% endif %}
+{% endfor %}
+{% set node_list = [] %}
+{% for node_id, node in cluster_state.nodes.items() %}
+  {% set node_hostname = node.Details.get('host_Hostname', '') %}
+  {% set is_seed = node_hostname in all_seed_hostnames %}
+  {% set node_info = {
+    'dc': node.DC if node.DC else 'Unknown',
+    'rack': node.rack if node.rack else 'default',
+    'hostname': node.Details.get('host_Hostname', 'unknown'),
+    'ip': node.Details.get('listen_address', node.Details.get('comp_listen_address', node_id[:8] + '...')),
+    'version': node.Details.get('comp_releaseVersion', node.Details.get('release_version', 'Unknown')),
+    'is_seed': is_seed,
+    'is_active': node.is_active,
+    'sort_key': node.DC + '||' + (node.rack if node.rack else 'default') + '||' + node.Details.get('listen_address', node.Details.get('comp_listen_address', node.Details.get('host_Hostname', node_id)))
+  } %}
+  {% set _ = node_list.append(node_info) %}
+{% endfor %}
+
+| Datacenter | Rack | Node | Version | Seed | Status |
+|------------|------|------|---------|------|--------|
+{% set prev_dc = '' %}{% for node_info in node_list | sort(attribute='sort_key') %}{% if node_info.dc != prev_dc and prev_dc != '' %}| | | | | | |
+{% endif %}{% set prev_dc = node_info.dc %}| {{ node_info.dc if loop.index == 1 or node_info.dc != node_list[loop.index0 - 1].dc else '' }} | {{ node_info.rack if loop.index == 1 or node_info.rack != node_list[loop.index0 - 1].rack or node_info.dc != node_list[loop.index0 - 1].dc else '' }} | {{ node_info.hostname }}/{{ node_info.ip }} | {{ node_info.version }} | {{ '✅ Yes' if node_info.is_seed else '❌ No' }} | {{ '✅ Active' if node_info.is_active else '🔴 Down' }} |
+{% endfor %}
+{% endif %}
+
+{% if node_details %}
+## Appendix: Node-Specific Issue Details
+
+This section provides detailed information about which nodes are affected by each issue identified in the report.
+
+{% for issue_key, details in node_details.items() %}
+### {{ details.title }}
+**Section:** {{ details.section.replace('_', ' ').title() }}  
+**Affected Nodes:** {{ details.affected_nodes | length }}
+{% set config_location = details.affected_nodes[0].details.get('config_location', 'cassandra.yaml') if details.affected_nodes else 'cassandra.yaml' %}
+{% if '(' in details.title and ')' in details.title %}
+  {% set start = details.title.rfind('(') + 1 %}
+  {% set end = details.title.rfind(')') %}
+  {% set param_name = details.title[start:end] %}
+{% else %}
+  {% set param_name = details.title %}
+{% endif %}
+**Configuration:** `{{ config_location }}` - `{{ param_name }}`
+
+{% set has_config_location = details.affected_nodes and details.affected_nodes[0].details.get('config_location') %}
+{% if has_config_location %}
+| Node | Current Value | Recommended |
+|------|---------------|-------------|
+{% for node_info in details.affected_nodes %}{% set node = cluster_state.nodes.get(node_info.node_id) %}| {{ node.Details.get('host_Hostname', 'unknown') if node else 'unknown' }}/{{ node.Details.get('listen_address', node.Details.get('comp_listen_address', node_info.node_id[:8] + '...')) if node else node_info.node_id[:8] + '...' }} | {% if 'memtable_allocation_type' in node_info.details %}{{ node_info.details.get('memtable_allocation_type', 'N/A') }}{% elif 'memtable_flush_writers' in node_info.details %}{{ node_info.details.get('memtable_flush_writers', 'N/A') }}{% elif 'concurrent_reads' in node_info.details and 'Low Concurrent Reads' in details.title %}{{ node_info.details.get('concurrent_reads', 'N/A') }}{% elif 'concurrent_writes' in node_info.details and 'Low Concurrent Writes' in details.title %}{{ node_info.details.get('concurrent_writes', 'N/A') }}{% elif 'native_transport_max_threads' in node_info.details %}{{ node_info.details.get('native_transport_max_threads', 'N/A') }}{% elif 'sysctl_value' in node_info.details %}{{ node_info.details.get('sysctl_value', 'N/A') }}{% else %}{{ node_info.details.get('current_value', 'N/A') }}{% endif %} | {{ node_info.details.get('recommended_value', 'See recommendation') }} |
+{% endfor %}
+{% else %}
+| Node | Details |
+|------|---------|
+{% for node_info in details.affected_nodes %}{% set node = cluster_state.nodes.get(node_info.node_id) %}| {{ node.Details.get('host_Hostname', 'unknown') if node else 'unknown' }}/{{ node.Details.get('listen_address', node.Details.get('comp_listen_address', node_info.node_id[:8] + '...')) if node else node_info.node_id[:8] + '...' }} | {% for key, value in node_info.details.items() if key not in ['node_id', 'component'] and value %}{{ key.replace('comp_', '') }}: {{ value }}{% if not loop.last %}, {% endif %}{% endfor %} |
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+{% endif %}
+
+## Appendix: Data Model Details
+
+{% for section_name, section_data in analysis_results.items() %}
+  {% if section_name == 'datamodel' and 'recommendations' in section_data %}
+    {% for rec in section_data.recommendations %}
+      {% if rec.get('title') == 'Speculative Retry Enabled (Multiple Tables)' and rec.get('context', {}).get('tables_affected') %}
+        {% set tables_affected = rec.get('context', {}).get('tables_affected', []) %}
+        {% set retry_setting = rec.get('context', {}).get('speculative_retry', 'unknown') %}
+        {% if tables_affected %}
+### Tables with Speculative Retry Enabled
+
+The following {{ tables_affected | length }} tables have speculative_retry set to '{{ retry_setting }}':
+
+| Table | Current Setting | Recommended |
+|-------|-----------------|-------------|
+{% for table in tables_affected | sort %}| {{ table }} | speculative_retry={{ retry_setting }} | NONE |
+{% endfor %}
+
+**Impact:** Speculative retry can cause unnecessary load and is often counterproductive in modern deployments.
+
+**To fix all tables in a keyspace:**
+```cql
+-- Example for a specific keyspace
+{% set sample_keyspace = tables_affected[0].split('.')[0] if tables_affected else 'keyspace_name' %}
+{% for table in tables_affected[:3] %}{% if table.startswith(sample_keyspace + '.') %}
+ALTER TABLE {{ table }} WITH speculative_retry = 'NONE';{% endif %}{% endfor %}
+-- ... repeat for all affected tables
+```
+        {% endif %}
+      {% elif rec.get('title') == 'Unused Tables Detected' and rec.get('context', {}).get('unused_tables') %}
+        {% set unused_tables = rec.get('context', {}).get('unused_tables', []) %}
+        {% if unused_tables %}
+### Unused Tables
+
+These tables have shown no read or write activity during the analysis period:
+
+| Table | Action |
+|-------|--------|
+{% for table in unused_tables %}| {{ table }} | Verify if still needed before dropping |
+{% endfor %}
+        {% endif %}
+      {% elif rec.get('title') == 'Collection Types Usage' and rec.get('context', {}).get('collection_table_details') %}
+        {% set collection_details = rec.get('context', {}).get('collection_table_details', []) %}
+        {% if collection_details %}
+### Tables with Collections
+
+The following tables use collection types (list, set, map):
+
+{% for table_detail in collection_details %}
+#### {{ table_detail.table }}
+
+```sql
+{{ table_detail.schema }}
+```
+
+{% endfor %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+{% endfor %}
+
+## Appendix: Configuration Details
+
+{% for section_name, section_data in analysis_results.items() %}
+  {% if section_name == 'configuration' and 'recommendations' in section_data %}
+    {% for rec in section_data.recommendations %}
+      {% if rec.get('title') == 'Multiple Configuration Mismatches Detected' and rec.get('context', {}).get('mismatches') %}
+        {% set mismatches = rec.get('context', {}).get('mismatches', []) %}
+        {% if mismatches %}
+### Configuration Mismatches
+
+The following configuration parameters have different values across nodes:
+
+{% for mismatch in mismatches %}
+#### {{ mismatch.setting }}
+
+| Value | Node Count | Example Nodes |
+|-------|------------|---------------|
+{% for value, nodes in mismatch.get('values', {}).items() %}| {{ value }} | {{ nodes | length }} | {{ nodes[:3] | join(', ') }}{% if nodes | length > 3 %}...{% endif %} |
+{% endfor %}
+
+{% endfor %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+{% endfor %}
+
+---
+
+### Common Issues Explained
+
+**Large Partitions**: When too much data accumulates under one partition key, causing:
+- Slow queries as entire partition must be read
+- Memory pressure on nodes
+- Uneven data distribution
+
+**Tombstone Accumulation**: Deleted data markers that:
+- Must be scanned during reads
+- Slow down queries significantly
+- Eventually removed by compaction
+
+**GC Pauses**: Java garbage collection freezing the application to free memory:
+- Short pauses (< 200ms) are normal
+- Long pauses (> 1s) impact performance
+- Caused by heap pressure or poor tuning
+
+---
+
+_Report generated by Cassandra AxonOps Analyzer v1.0_  
+_Analysis completed in {{ cluster_state.collection_duration_seconds | round(2) if cluster_state.collection_duration_seconds else 'N/A' }} seconds_
+""")

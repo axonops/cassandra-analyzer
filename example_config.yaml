@@ -1,0 +1,58 @@
+# Example configuration for Cassandra AxonOps Analyzer
+
+# Cluster identification (required)
+cluster:
+  org: "your-organization-name"
+  cluster: "your-cluster-name"
+  cluster_type: "cassandra"  # or "dse" for DataStax Enterprise
+
+# AxonOps API configuration (required)
+axonops:
+  api_url: "http://localhost:9090"
+  token: "your-api-token-here"  # Can also be set via AXONOPS_API_TOKEN env var
+  timeout: 30
+  max_retries: 3
+
+# Analysis configuration (optional - defaults shown)
+analysis:
+  # Number of hours to analyze (from current time backwards)
+  hours: 24
+  
+  # Metrics query resolution (seconds)
+  metrics_resolution_seconds: 60
+  
+  # Enable/disable analysis sections
+  enable_sections:
+    infrastructure: true
+    configuration: true
+    operations: true
+    datamodel: true
+    security: true
+  
+  # Analysis thresholds
+  thresholds:
+    # Infrastructure thresholds (%)
+    cpu_usage_warn: 80.0
+    memory_usage_warn: 85.0
+    disk_usage_warn: 80.0
+    
+    # JVM thresholds
+    heap_usage_warn: 75.0  # %
+    gc_pause_warn_ms: 200
+    gc_pause_critical_ms: 1000
+    
+    # Operations thresholds
+    dropped_messages_warn: 1000
+    dropped_messages_critical: 10000
+    pending_compactions_warn: 100
+    pending_compactions_critical: 1000
+    blocked_tasks_warn: 1
+    
+    # Table thresholds
+    sstables_per_read_warn: 4
+    partition_size_warn_mb: 100
+    partition_size_critical_mb: 1000
+    tombstone_ratio_warn: 0.1
+    
+    # Replication thresholds
+    min_replication_factor: 3
