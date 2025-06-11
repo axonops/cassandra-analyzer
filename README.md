@@ -1,6 +1,6 @@
 # Cassandra AxonOps Analyzer
 
-A Python-based Cassandra cluster analysis tool that performs Montecristo-style analysis using AxonOps API as the data source instead of diagnostic tarballs.
+A Python-based Cassandra cluster analysis tool that performs analysis using AxonOps API as the data source instead of diagnostic tarballs.
 
 ## Overview
 
@@ -42,6 +42,27 @@ python -m cassandra_analyzer --config config.yaml --output-dir /path/to/reports
 
 # With verbose logging
 python -m cassandra_analyzer --config config.yaml --verbose
+
+# Generate PDF report in addition to markdown
+python -m cassandra_analyzer --config config.yaml --pdf
+```
+
+### PDF Generation
+
+To generate PDF reports, install the additional dependencies:
+
+```bash
+pip install weasyprint markdown beautifulsoup4
+```
+
+**Note**: WeasyPrint requires system dependencies. On Ubuntu/Debian:
+```bash
+sudo apt-get install python3-cffi python3-brotli libpango-1.0-0 libpangoft2-1.0-0
+```
+
+On macOS:
+```bash
+brew install pango
 ```
 
 ## Configuration
@@ -86,7 +107,7 @@ See `example_config.yaml` for a complete configuration example with all availabl
 
 ## Architecture
 
-The analyzer is organized into modules that mirror Montecristo's structure:
+The analyzer is organized into modules:
 
 - **client/** - AxonOps API client
 - **collectors/** - Data collection modules

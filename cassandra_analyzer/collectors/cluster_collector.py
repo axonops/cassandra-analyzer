@@ -294,7 +294,7 @@ class ClusterDataCollector:
         """Collect specific log events for operations analysis"""
         log_events = {}
         
-        # Define log searches based on Montecristo operations analysis
+        # Define log searches based on operations analysis
         # Use histograms for efficient counting of log patterns
         # Note: The AxonOps histogram API appears to use different indexing than the search API
         # These patterns work with the histogram API but may not return the same results with search

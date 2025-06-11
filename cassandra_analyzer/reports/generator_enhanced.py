@@ -1,5 +1,5 @@
 """
-Enhanced report generator for analysis results with Montecristo-style formatting
+Enhanced report generator for analysis results
 """
 
 import json

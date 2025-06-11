@@ -1,7 +1,7 @@
 """
 Cassandra AxonOps Analyzer
 
-A Python-based Cassandra cluster analysis tool that performs Montecristo-style 
+A Python-based Cassandra cluster analysis tool
 analysis using AxonOps API as the data source.
 """
 

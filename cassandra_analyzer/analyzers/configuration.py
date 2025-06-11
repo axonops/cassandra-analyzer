@@ -54,7 +54,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             }
     
     def _analyze_jvm_settings(self, cluster_state: ClusterState) -> List[Recommendation]:
-        """Analyze JVM configuration across nodes - full implementation based on Montecristo"""
+        """Analyze JVM configuration across nodes """
         recommendations = []
         
         try:
@@ -200,7 +200,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             return []
     
     def _get_jvm_heap_recommendations(self, heap_size: int, gc_algorithm: str, system_memory: int, node_identifier: str) -> List[Recommendation]:
-        """Generate JVM heap recommendations based on Montecristo's logic"""
+        """Generate JVM heap recommendations"""
         recommendations = []
         
         # Convert bytes to more readable units
@@ -408,7 +408,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         return recommendations
     
     def _analyze_cassandra_settings(self, cluster_state: ClusterState) -> List[Recommendation]:
-        """Analyze Cassandra configuration - enhanced with Montecristo-style analysis"""
+        """Analyze Cassandra configurations"""
         recommendations = []
         
         logger.debug(f"Starting Cassandra settings analysis with {len(cluster_state.nodes)} nodes")
@@ -440,7 +440,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         return recommendations
     
     def _analyze_configuration_mismatches(self, cluster_state: ClusterState) -> List[Recommendation]:
-        """Detect configuration mismatches based on Montecristo's ConfigurationMismatches.kt"""
+        """Detect configuration mismatches"""
         recommendations = []
         
         if len(cluster_state.nodes) < 2:

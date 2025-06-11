@@ -1,5 +1,5 @@
 """
-Extended configuration analyzers implementing Montecristo's additional configuration checks
+Extended configuration analyzers implementing additional configuration checks
 """
 
 from typing import Dict, Any, List, Optional
@@ -11,7 +11,7 @@ logger = structlog.get_logger()
 
 
 class ExtendedConfigurationAnalyzer(BaseAnalyzer):
-    """Extended configuration analyzer implementing additional Montecristo checks"""
+    """Extended configuration analyzer implementing additional checks"""
     
     def _get_node_identifier(self, node) -> str:
         """Get a human-readable node identifier in hostname/ipaddress format"""
