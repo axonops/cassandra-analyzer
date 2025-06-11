@@ -8,7 +8,7 @@ cluster:
 
 # AxonOps API configuration (required)
 axonops:
-  api_url: "http://localhost:9090"
+  api_url: "https://dash.axonops.cloud/"
   token: "your-api-token-here"  # Can also be set via AXONOPS_API_TOKEN env var
   timeout: 30
   max_retries: 3

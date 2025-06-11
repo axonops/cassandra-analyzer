@@ -73,8 +73,15 @@ class CassandraAnalyzer:
         
         self.report_generator = EnhancedReportGenerator(output_dir)
     
-    def analyze(self) -> Path:
-        """Run the complete analysis and generate report"""
+    def analyze(self, generate_pdf: bool = False) -> Path:
+        """Run the complete analysis and generate report
+        
+        Args:
+            generate_pdf: Whether to also generate a PDF version of the report
+            
+        Returns:
+            Path to the generated report
+        """
         logger.info(
             "Starting analysis",
             org=self.org,
@@ -93,7 +100,7 @@ class CassandraAnalyzer:
         
         # Step 3: Generate report
         logger.info("Generating report")
-        report_path = self._generate_report(cluster_state, analysis_results)
+        report_path = self._generate_report(cluster_state, analysis_results, generate_pdf)
         
         logger.info("Analysis complete", report_path=str(report_path))
         return report_path
@@ -128,7 +135,8 @@ class CassandraAnalyzer:
     def _generate_report(
         self,
         cluster_state: ClusterState,
-        analysis_results: Dict[str, Any]
+        analysis_results: Dict[str, Any],
+        generate_pdf: bool = False
     ) -> Path:
         """Generate the final report"""
         report_data = {
@@ -146,4 +154,4 @@ class CassandraAnalyzer:
             "analysis_results": analysis_results,
         }
         
-        return self.report_generator.generate(report_data)
+        return self.report_generator.generate(report_data, generate_pdf=generate_pdf)

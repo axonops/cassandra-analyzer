@@ -7,7 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+import structlog
 from ..models.recommendations import Severity
+
+# Make PDF generation optional
+try:
+    from .pdf_generator import PDFGenerator
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 
 
 class EnhancedReportGenerator:
@@ -31,8 +39,16 @@ class EnhancedReportGenerator:
         self.env.filters['severity_text'] = self._severity_text
         self.env.filters['get_attr'] = self._get_attr
     
-    def generate(self, report_data: Dict[str, Any]) -> Path:
-        """Generate the analysis report"""
+    def generate(self, report_data: Dict[str, Any], generate_pdf: bool = False) -> Path:
+        """Generate the analysis report
+        
+        Args:
+            report_data: The analysis data
+            generate_pdf: Whether to also generate a PDF version
+            
+        Returns:
+            Path to the generated markdown report
+        """
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         cluster_name = report_data["cluster_info"]["cluster_name"]
         
@@ -43,6 +59,19 @@ class EnhancedReportGenerator:
         # Generate JSON report for programmatic access
         json_path = self.output_dir / f"cassandra_analysis_{cluster_name}_{timestamp}.json"
         self._generate_json(report_data, json_path)
+        
+        # Generate PDF if requested
+        if generate_pdf:
+            if not PDF_AVAILABLE:
+                structlog.get_logger().warning("PDF generation requested but dependencies not installed. Install with: pip install weasyprint markdown beautifulsoup4")
+            else:
+                try:
+                    pdf_generator = PDFGenerator()
+                    pdf_path = pdf_generator.generate_pdf(md_path)
+                    structlog.get_logger().info("PDF report generated", path=str(pdf_path))
+                except Exception as e:
+                    structlog.get_logger().error("Failed to generate PDF", error=str(e))
+                    # Don't fail the entire process if PDF generation fails
         
         return md_path
     
@@ -97,6 +126,9 @@ class EnhancedReportGenerator:
         # Render template
         template = self._get_enhanced_markdown_template()
         content = template.render(**context)
+        
+        # Clean up multiple consecutive empty lines
+        content = self._clean_empty_lines(content)
         
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(content)
@@ -434,6 +466,31 @@ class EnhancedReportGenerator:
         else:
             return getattr(obj, attr_name, default)
     
+    def _clean_empty_lines(self, content: str) -> str:
+        """Clean up multiple consecutive empty lines in markdown content"""
+        import re
+        
+        # Replace multiple consecutive newlines with a maximum of 2
+        content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)
+        
+        # Clean up empty lines between markdown elements
+        # Remove empty lines after headers
+        content = re.sub(r'(^#+[^\n]+)\n\s*\n', r'\1\n', content, flags=re.MULTILINE)
+        
+        # Remove empty lines before headers  
+        content = re.sub(r'\n\s*\n(^#+[^\n]+)', r'\n\1', content, flags=re.MULTILINE)
+        
+        # Clean up empty lines around horizontal rules
+        content = re.sub(r'\n\s*\n---\n\s*\n', '\n\n---\n\n', content)
+        
+        # Remove trailing whitespace on each line
+        content = re.sub(r'[ \t]+$', '', content, flags=re.MULTILINE)
+        
+        # Ensure file ends with single newline
+        content = content.rstrip() + '\n'
+        
+        return content
+    
     def _get_enhanced_markdown_template(self) -> str:
         """Get the enhanced markdown template"""
         return self.env.from_string("""
@@ -541,7 +598,9 @@ Your Cassandra cluster consists of {{ cluster_state.get_total_nodes() if cluster
   {% if seed_provider and 'seeds=' in seed_provider and not all_seed_hostnames %}
     {% set seeds_part = seed_provider.split('seeds=')[1].split('}')[0] %}
     {% for seed in seeds_part.split(',') %}
-      {% set _ = all_seed_hostnames.append(seed.strip()) %}
+      {# Remove port number from seed hostname #}
+      {% set seed_host = seed.strip().split(':')[0] %}
+      {% set _ = all_seed_hostnames.append(seed_host) %}
     {% endfor %}
   {% endif %}
 {% endfor %}
@@ -549,7 +608,22 @@ Your Cassandra cluster consists of {{ cluster_state.get_total_nodes() if cluster
   {% set dc = node.DC if node.DC else 'Unknown' %}
   {% set rack = node.rack if node.rack else 'default' %}
   {% set node_hostname = node.Details.get('host_Hostname', '') %}
-  {% set is_seed = node_hostname in all_seed_hostnames %}
+  {# Check if node is a seed - handle domain mismatches #}
+  {% set is_seed = false %}
+  {% if node_hostname %}
+    {% if node_hostname in all_seed_hostnames %}
+      {% set is_seed = true %}
+    {% else %}
+      {# Check for hostname match ignoring domain #}
+      {% set node_base = node_hostname.split('.')[0] if '.' in node_hostname else node_hostname %}
+      {% for seed in all_seed_hostnames if not is_seed %}
+        {% set seed_base = seed.split('.')[0] if '.' in seed else seed %}
+        {% if node_base == seed_base %}
+          {% set is_seed = true %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  {% endif %}
   {% set version = node.Details.get('comp_releaseVersion', node.Details.get('release_version', 'Unknown')) %}
   
   {# Count nodes per DC/rack #}
@@ -836,14 +910,31 @@ This section provides a detailed view of all nodes in the cluster.
   {% if seed_provider and 'seeds=' in seed_provider and not all_seed_hostnames %}
     {% set seeds_part = seed_provider.split('seeds=')[1].split('}')[0] %}
     {% for seed in seeds_part.split(',') %}
-      {% set _ = all_seed_hostnames.append(seed.strip()) %}
+      {# Remove port number from seed hostname #}
+      {% set seed_host = seed.strip().split(':')[0] %}
+      {% set _ = all_seed_hostnames.append(seed_host) %}
     {% endfor %}
   {% endif %}
 {% endfor %}
 {% set node_list = [] %}
 {% for node_id, node in cluster_state.nodes.items() %}
   {% set node_hostname = node.Details.get('host_Hostname', '') %}
-  {% set is_seed = node_hostname in all_seed_hostnames %}
+  {# Check if node is a seed - handle domain mismatches #}
+  {% set is_seed = false %}
+  {% if node_hostname %}
+    {% if node_hostname in all_seed_hostnames %}
+      {% set is_seed = true %}
+    {% else %}
+      {# Check for hostname match ignoring domain #}
+      {% set node_base = node_hostname.split('.')[0] if '.' in node_hostname else node_hostname %}
+      {% for seed in all_seed_hostnames if not is_seed %}
+        {% set seed_base = seed.split('.')[0] if '.' in seed else seed %}
+        {% if node_base == seed_base %}
+          {% set is_seed = true %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  {% endif %}
   {% set node_info = {
     'dc': node.DC if node.DC else 'Unknown',
     'rack': node.rack if node.rack else 'default',
@@ -859,8 +950,7 @@ This section provides a detailed view of all nodes in the cluster.
 
 | Datacenter | Rack | Node | Version | Seed | Status |
 |------------|------|------|---------|------|--------|
-{% set prev_dc = '' %}{% for node_info in node_list | sort(attribute='sort_key') %}{% if node_info.dc != prev_dc and prev_dc != '' %}| | | | | | |
-{% endif %}{% set prev_dc = node_info.dc %}| {{ node_info.dc if loop.index == 1 or node_info.dc != node_list[loop.index0 - 1].dc else '' }} | {{ node_info.rack if loop.index == 1 or node_info.rack != node_list[loop.index0 - 1].rack or node_info.dc != node_list[loop.index0 - 1].dc else '' }} | {{ node_info.hostname }}/{{ node_info.ip }} | {{ node_info.version }} | {{ '✅ Yes' if node_info.is_seed else '❌ No' }} | {{ '✅ Active' if node_info.is_active else '🔴 Down' }} |
+{% for node_info in node_list | sort(attribute='sort_key') %}| {{ node_info.dc }} | {{ node_info.rack }} | {{ node_info.hostname }}/{{ node_info.ip }} | {{ node_info.version }} | {{ '✅ Yes' if node_info.is_seed else '❌ No' }} | {{ '✅ Active' if node_info.is_active else '🔴 Down' }} |
 {% endfor %}
 {% endif %}
 
@@ -914,7 +1004,7 @@ The following {{ tables_affected | length }} tables have speculative_retry set t
 
 | Table | Current Setting | Recommended |
 |-------|-----------------|-------------|
-{% for table in tables_affected | sort %}| {{ table }} | speculative_retry={{ retry_setting }} | NONE |
+{% for table in tables_affected | sort %}| {{ table }} | speculative_retry={{ retry_setting }} | NEVER |
 {% endfor %}
 
 **Impact:** Speculative retry can cause unnecessary load and is often counterproductive in modern deployments.
@@ -924,7 +1014,7 @@ The following {{ tables_affected | length }} tables have speculative_retry set t
 -- Example for a specific keyspace
 {% set sample_keyspace = tables_affected[0].split('.')[0] if tables_affected else 'keyspace_name' %}
 {% for table in tables_affected[:3] %}{% if table.startswith(sample_keyspace + '.') %}
-ALTER TABLE {{ table }} WITH speculative_retry = 'NONE';{% endif %}{% endfor %}
+ALTER TABLE {{ table }} WITH speculative_retry = 'NEVER';{% endif %}{% endfor %}
 -- ... repeat for all affected tables
 ```
         {% endif %}

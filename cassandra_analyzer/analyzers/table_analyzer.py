@@ -309,8 +309,9 @@ class TableAnalyzer(BaseAnalyzer):
             for table in keyspace.Tables:
                 speculative_retry = table.get_speculative_retry()
                 
-                # Check if speculative retry is set to anything other than NONE
-                if speculative_retry and speculative_retry.upper() not in ['NONE', 'DISABLED']:
+                # Check if speculative retry is set to anything other than NEVER
+                # Note: NEVER is the correct value for Cassandra 4.0+, NONE was used in older versions
+                if speculative_retry and speculative_retry.upper() not in ['NEVER', 'NONE', 'DISABLED']:
                     if speculative_retry not in speculative_retry_tables:
                         speculative_retry_tables[speculative_retry] = []
                     speculative_retry_tables[speculative_retry].append(f"{ks_name}.{table.name}")
@@ -326,11 +327,11 @@ class TableAnalyzer(BaseAnalyzer):
                         severity=Severity.WARNING,
                         category="datamodel",
                         impact="Speculative retry can cause unnecessary load and is often counterproductive in modern deployments",
-                        recommendation="Set speculative_retry to NONE unless you have specific latency requirements that benefit from it",
+                        recommendation="Set speculative_retry to NEVER unless you have specific latency requirements that benefit from it",
                         current_value=f"{len(tables)} tables affected",
                         tables_affected=tables,
                         speculative_retry=retry_setting,
-                        recommended_value="NONE",
+                        recommended_value="NEVER",
                         group_summary=True,
                         appendix_details="speculative_retry_tables"
                     )
@@ -345,10 +346,10 @@ class TableAnalyzer(BaseAnalyzer):
                             severity=Severity.WARNING,
                             category="datamodel",
                             impact="Speculative retry can cause unnecessary load and is often counterproductive in modern deployments",
-                            recommendation="Set speculative_retry to NONE unless you have specific latency requirements that benefit from it",
+                            recommendation="Set speculative_retry to NEVER unless you have specific latency requirements that benefit from it",
                             current_value=f"speculative_retry={retry_setting}",
                             speculative_retry=retry_setting,
-                            recommended_value="NONE"
+                            recommended_value="NEVER"
                         )
                     )
         

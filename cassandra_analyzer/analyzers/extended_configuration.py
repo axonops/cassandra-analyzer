@@ -382,6 +382,41 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     # Split by comma and clean up
                     seed_hostnames = [s.strip() for s in seeds_str.split(',')]
                     all_seeds.update(seed_hostnames)
+                    
+                    # Check for non-existent seed hostnames
+                    # Collect all node hostnames in the cluster
+                    node_hostnames = set()
+                    for cluster_node in cluster_state.nodes.values():
+                        node_hostname = cluster_node.Details.get("host_Hostname", "")
+                        if node_hostname:
+                            node_hostnames.add(node_hostname)
+                    
+                    # Check which seeds don't exist in the cluster
+                    non_existent_seeds = []
+                    for seed in seed_hostnames:
+                        # Remove port if present
+                        seed_host = seed.split(':')[0] if ':' in seed else seed
+                        
+                        # Check if this seed hostname exists in the cluster
+                        if seed_host not in node_hostnames:
+                            non_existent_seeds.append(seed)
+                    
+                    # Create recommendation for non-existent seeds
+                    if non_existent_seeds:
+                        recommendations.append(
+                            self._create_recommendation(
+                                title="Non-existent Seed Hostnames",
+                                description=f"Found {len(non_existent_seeds)} seed hostname(s) that don't exist in the cluster",
+                                severity=Severity.CRITICAL,
+                                category="configuration",
+                                impact="Seeds are unreachable, preventing proper cluster formation and gossip propagation",
+                                recommendation="Update seed list to use correct hostnames that exist in the cluster",
+                                current_value=f"Invalid seeds: {', '.join(non_existent_seeds[:3])}{'...' if len(non_existent_seeds) > 3 else ''}",
+                                non_existent_seeds=non_existent_seeds,
+                                config_location="cassandra.yaml"
+                            )
+                        )
+                    
                     break  # All nodes should have the same seed list
         
         # Now count seeds per DC by matching hostnames
@@ -392,8 +427,21 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
             
             # Check if this node is a seed by hostname
             node_hostname = node.Details.get("host_Hostname", "")
-            if node_hostname and node_hostname in all_seeds:
-                seeds_per_dc[dc] += 1
+            if node_hostname:
+                # Check for exact match first
+                if node_hostname in all_seeds:
+                    seeds_per_dc[dc] += 1
+                else:
+                    # Check if any seed matches this node's hostname pattern
+                    # This handles cases where seed domains might be misconfigured
+                    for seed in all_seeds:
+                        # Extract the base hostname part (before first dot)
+                        node_base = node_hostname.split('.')[0] if '.' in node_hostname else node_hostname
+                        seed_base = seed.split('.')[0] if '.' in seed else seed
+                        # If the base hostnames match, count it as a seed
+                        if node_base == seed_base:
+                            seeds_per_dc[dc] += 1
+                            break
         
         # Now check if each DC has adequate seeds
         for dc, nodes in datacenter_nodes.items():
