@@ -206,4 +206,26 @@ aws-env.sh
 !yarn.lock
 !Gemfile.lock
 
+# PyInstaller artifacts
+*.spec
+build/
+dist/
+
+# Documentation build
+docs/site/
+site/
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# Test artifacts
+.pytest_cache/
+.tox/
+
+# CLA signatures (stored in separate branch)
+signatures/
+
 

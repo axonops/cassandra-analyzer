@@ -1,0 +1,18 @@
+[flake8]
+max-line-length = 120
+extend-ignore = W291,W292,W293,F401,E128,E501,E129,E303,F841,F541,E203,E722,E302,E305
+exclude = 
+    .git,
+    __pycache__,
+    docs/source/conf.py,
+    old,
+    build,
+    dist,
+    venv,
+    .venv,
+    .tox,
+    .eggs,
+    *.egg-info,
+    scripts
+per-file-ignores =
+    __init__.py:F401

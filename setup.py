@@ -9,12 +9,12 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="cassandra-axonops-analyzer",
     version="0.1.0",
-    author="Your Name",
-    author_email="your.email@example.com",
-    description="A Cassandra cluster analyzer using AxonOps API",
+    author="AxonOps Team",
+    author_email="support@axonops.com",
+    description="Comprehensive Cassandra cluster analysis tool powered by AxonOps",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/cassandra-axonops-analyzer",
+    url="https://github.com/axonops/cassandra-analyzer",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
