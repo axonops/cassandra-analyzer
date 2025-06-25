@@ -131,14 +131,20 @@ cassandra-analyzer-windows-amd64.exe --config config.yaml
 
 #### Platform-Specific Instructions
 
+> **Quick Download**: Visit the [releases page](https://github.com/axonops/cassandra-analyzer/releases/latest) and download the appropriate file for your platform.
+
 ##### macOS Security (Gatekeeper)
 
 macOS will block unsigned executables. You have several options:
 
 **Option 1: Remove quarantine attribute (Recommended)**
 ```bash
-# Download the file
-curl -L -o cassandra-analyzer https://github.com/axonops/cassandra-analyzer/releases/download/vX.X.X/cassandra-analyzer-macos-arm64
+# Download the file (replace VERSION with actual version, e.g., v0.9.20)
+# For Apple Silicon Macs:
+curl -L -o cassandra-analyzer https://github.com/axonops/cassandra-analyzer/releases/download/VERSION/cassandra-analyzer-macos-arm64
+
+# For Intel Macs:
+curl -L -o cassandra-analyzer https://github.com/axonops/cassandra-analyzer/releases/download/VERSION/cassandra-analyzer-macos-amd64
 
 # Remove quarantine attribute
 xattr -d com.apple.quarantine cassandra-analyzer
@@ -180,11 +186,14 @@ Add-MpPreference -ExclusionPath "C:\path\to\cassandra-analyzer-windows-amd64.exe
 
 Linux typically doesn't block unsigned binaries, but ensure it's executable:
 ```bash
-# Download
-wget https://github.com/axonops/cassandra-analyzer/releases/download/vX.X.X/cassandra-analyzer-linux-amd64
+# Download (replace VERSION with actual version, e.g., v0.9.20)
+wget https://github.com/axonops/cassandra-analyzer/releases/download/VERSION/cassandra-analyzer-linux-amd64
+
+# Or use curl
+curl -L -o cassandra-analyzer https://github.com/axonops/cassandra-analyzer/releases/download/VERSION/cassandra-analyzer-linux-amd64
 
 # Make executable
-chmod +x cassandra-analyzer-linux-amd64
+chmod +x cassandra-analyzer-linux-amd64  # or just 'cassandra-analyzer' if you used curl
 
 # Run
 ./cassandra-analyzer-linux-amd64 --config config.yaml
