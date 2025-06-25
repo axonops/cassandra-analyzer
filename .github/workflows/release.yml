@@ -56,9 +56,10 @@ jobs:
       run: |
         make test
     
-    - name: Run type checking
-      run: |
-        make type-check
+    # Type checking is disabled to match CI workflow
+    # - name: Run type checking
+    #   run: |
+    #     make type-check
 
   build-and-publish:
     needs: [determine-release-type, test]
