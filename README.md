@@ -55,7 +55,7 @@ Cassandra AxonOps Analyzer is a powerful diagnostic tool that performs comprehen
 
 ## 📋 Requirements
 
-- Python 3.8 or higher
+- Python 3.11 or higher
 - Access to [AxonOps](https://axonops.com) monitoring platform
 - AxonOps API token with appropriate permissions
 
