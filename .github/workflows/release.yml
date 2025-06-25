@@ -380,12 +380,12 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        VERSION="${{ github.ref_name }}"
-        VERSION="${VERSION#v}"  # Remove 'v' prefix
-        gh release upload ${{ github.ref_name }} \
-          cassandra-analyzer_${VERSION}_amd64.deb \
-          cassandra-analyzer-${VERSION}-1.x86_64.rpm \
-          --clobber
+        # List files to see what was actually created
+        echo "Files created:"
+        ls -la *.deb *.rpm
+        
+        # Upload all .deb and .rpm files
+        gh release upload ${{ github.ref_name }} *.deb *.rpm --clobber
 
   # TODO: Enable Docker build when ready
   # build-docker:
