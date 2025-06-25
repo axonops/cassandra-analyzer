@@ -1,0 +1,37 @@
+# Development dependencies
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.11.1
+pytest-timeout>=2.1.0
+coverage[toml]>=7.2.7
+
+# Code quality
+black>=23.7.0
+flake8>=6.1.0
+isort>=5.12.0
+mypy>=1.4.1
+bandit>=1.7.5
+pre-commit>=3.3.3
+
+# Type stubs
+types-requests>=2.31.0
+types-PyYAML>=6.0.12
+
+# Documentation
+mkdocs>=1.5.0
+mkdocs-material>=9.1.21
+mkdocstrings[python]>=0.22.0
+
+# Build tools
+build>=0.10.0
+wheel>=0.41.0
+twine>=4.0.2
+setuptools>=68.0.0
+
+# Executable building
+pyinstaller>=5.13.0
+
+# Release tools
+bump2version>=1.0.1
