@@ -78,13 +78,39 @@ The process described here has several goals:
 
 Please follow these steps to have your contribution considered by the maintainers:
 
-1. **Sign the CLA** - Follow the instructions in the pull request to sign our Contributor License Agreement.
+1. **Sign the CLA** - Follow the instructions in the pull request to sign our Contributor License Agreement (see [CLA Process](#cla-contributor-license-agreement-process) below).
 2. **Follow the [styleguides](#styleguides)**
 3. **Write tests** - We follow Test-Driven Development (TDD). Write tests first, then implementation.
 4. **Update documentation** - Ensure the README.md and any other relevant documentation are kept up-to-date.
 5. **Create a pull request** - Follow the [pull request template](.github/PULL_REQUEST_TEMPLATE.md)
 
 While the prerequisites above must be satisfied prior to having your pull request reviewed, the reviewer(s) may ask you to complete additional design work, tests, or other changes before your pull request can be ultimately accepted.
+
+### CLA (Contributor License Agreement) Process
+
+All contributors are required to sign a Contributor License Agreement (CLA) before their pull request can be merged. This is handled automatically by GitHub Actions:
+
+1. **When you open a PR**: The CLA Assistant bot will automatically check if you've signed the CLA.
+
+2. **If you haven't signed**: The bot will comment on your PR with instructions:
+   - It will provide a link to read the CLA document
+   - You'll need to comment on the PR with: `I have read the CLA Document and I hereby sign the CLA`
+   - This comment acts as your electronic signature
+
+3. **After signing**: 
+   - The bot will store your signature for future contributions
+   - Your PR can proceed with review
+   - You won't need to sign again for future PRs
+
+4. **If there are issues**:
+   - You can comment `recheck` to have the bot check your CLA status again
+   - The CLA status is shown as a check on your PR
+
+5. **Excluded from CLA**:
+   - Dependabot, Renovate, and GitHub Actions bots are automatically excluded
+   - They don't need to sign the CLA
+
+**Important**: The CLA ensures that contributions can be distributed under the project's open source license and protects both you and the project. It's a one-time process per contributor.
 
 ## Styleguides
 

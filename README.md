@@ -263,30 +263,45 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## 🤝 Community & Support
 
-- Built for the Apache Cassandra® community
-- Powered by [AxonOps](https://axonops.com) monitoring platform
-- Inspired by traditional Cassandra diagnostic tools
+### Get Involved
 
-## 📞 Support
+- 💡 **Share Ideas**: Visit our [GitHub Discussions](https://github.com/axonops/cassandra-analyzer/discussions) to propose new features
+- 🐛 **Report Issues**: Found a bug? [Open an issue](https://github.com/axonops/cassandra-analyzer/issues)
+- 🤝 **Contribute**: We welcome pull requests! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
+- ⭐ **Star Us**: If you find Cassandra Analyzer useful, please star our repository!
 
-- 📧 Email: support@axonops.com
-- 💬 [GitHub Discussions](https://github.com/axonops/cassandra-analyzer/discussions)
-- 🐛 [Issue Tracker](https://github.com/axonops/cassandra-analyzer/issues)
+### Stay Connected
 
-## 🔗 Links
+- 🌐 **Website**: [axonops.com](https://axonops.com)
+- 📧 **Contact**: Visit our website for support options
 
-- [AxonOps Platform](https://axonops.com)
-- [Apache Cassandra](https://cassandra.apache.org)
-- [Documentation](https://docs.axonops.com)
+## 🙏 Acknowledgements
+
+Cassandra Analyzer builds upon the foundation laid by several open-source projects, particularly Apache Cassandra. We extend our sincere gratitude to the Apache Cassandra community for their outstanding work and contributions to the field of distributed databases.
+
+Apache Cassandra is a free and open-source, distributed, wide-column store, NoSQL database management system designed to handle large amounts of data across many commodity servers, providing high availability with no single point of failure.
+
+### Apache Cassandra Resources
+
+- **Official Website**: [cassandra.apache.org](https://cassandra.apache.org)
+- **Source Code**: Available on [GitHub](https://github.com/apache/cassandra) or the Apache Git repository at [gitbox.apache.org/repos/asf/cassandra.git](https://gitbox.apache.org/repos/asf/cassandra.git)
+- **Documentation**: Comprehensive guides and references available at the [Apache Cassandra website](https://cassandra.apache.org/doc/latest/)
+
+Cassandra Analyzer incorporates and extends functionality from various Cassandra tools and utilities, enhancing them to provide comprehensive cluster analysis capabilities for Cassandra operators and DBAs.
+
+We encourage users to explore and contribute to the main Apache Cassandra project, as well as to provide feedback and suggestions for Cassandra Analyzer through our GitHub discussions and issues pages.
+
+## ⚖️ Legal Notices
+
+This project may contain trademarks or logos for projects, products, or services. Any use of third-party trademarks or logos are subject to those third-party's policies.
+
+- **AxonOps** is a registered trademark of AxonOps Limited.
+- **Apache**, **Apache Cassandra**, **Cassandra**, **Apache Spark**, **Spark**, **Apache TinkerPop**, **TinkerPop**, **Apache Kafka** and **Kafka** are either registered trademarks or trademarks of the Apache Software Foundation or its subsidiaries in Canada, the United States and/or other countries.
 
 ---
 
 <p align="center">
   Made with ❤️ by the AxonOps Team
-</p>
-
-<p align="center">
-  Apache Cassandra® is a registered trademark of the Apache Software Foundation
 </p>
