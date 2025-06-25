@@ -5,7 +5,7 @@
 <h1 align="center">Cassandra® AxonOps Analyser</h1>
 
 <p align="center">
-  <strong>Comprehensive Cassandra® Cluster Analysis Tool Powered by AxonOps™</strong>
+  <strong>Comprehensive Cassandra Cluster Analysis Tool Powered by AxonOps™</strong>
 </p>
 
 > ⚠️ **DEVELOPMENT STATUS**: This project is currently under active development and is not yet ready for production use. Features may change, and stability is not guaranteed. Please wait for the official release announcement before using in production environments.
@@ -32,7 +32,7 @@
 
 ## 🚀 Overview
 
-Cassandra AxonOps Analyzer is a powerful diagnostic tool that performs comprehensive analysis of Apache Cassandra® clusters using the [AxonOps](https://axonops.com) monitoring platform. Unlike traditional diagnostic tools that require manual collection of logs and metrics, Cassandra AxonOps Analyzer connects directly to your AxonOps instance to provide real-time insights and recommendations.
+Cassandra AxonOps Analyzer is a powerful diagnostic tool that performs comprehensive analysis of Apache Cassandra clusters using the [AxonOps](https://axonops.com) monitoring platform. Unlike traditional diagnostic tools that require manual collection of logs and metrics, Cassandra AxonOps Analyzer connects directly to your AxonOps instance to provide real-time insights and recommendations.
 
 ### ✨ Key Features
 
