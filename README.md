@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.svg" alt="Cassandra Analyzer Logo" width="200">
+  <img src="logo.svg" alt="Cassandra AxonOps Analyzer Logo" width="200">
 </p>
 
 <h1 align="center">Cassandra® AxonOps Analyser</h1>
@@ -32,7 +32,7 @@
 
 ## 🚀 Overview
 
-Cassandra Analyzer is a powerful diagnostic tool that performs comprehensive analysis of Apache Cassandra® clusters using the [AxonOps](https://axonops.com) monitoring platform. Unlike traditional diagnostic tools that require manual collection of logs and metrics, Cassandra Analyzer connects directly to your AxonOps instance to provide real-time insights and recommendations.
+Cassandra AxonOps Analyzer is a powerful diagnostic tool that performs comprehensive analysis of Apache Cassandra® clusters using the [AxonOps](https://axonops.com) monitoring platform. Unlike traditional diagnostic tools that require manual collection of logs and metrics, Cassandra AxonOps Analyzer connects directly to your AxonOps instance to provide real-time insights and recommendations.
 
 ### ✨ Key Features
 
@@ -276,7 +276,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - 💡 **Share Ideas**: Visit our [GitHub Discussions](https://github.com/axonops/cassandra-analyzer/discussions) to propose new features
 - 🐛 **Report Issues**: Found a bug? [Open an issue](https://github.com/axonops/cassandra-analyzer/issues)
 - 🤝 **Contribute**: We welcome pull requests! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
-- ⭐ **Star Us**: If you find Cassandra Analyzer useful, please star our repository!
+- ⭐ **Star Us**: If you find Cassandra AxonOps Analyzer useful, please star our repository!
 
 ### Stay Connected
 
@@ -285,7 +285,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## 🙏 Acknowledgements
 
-Cassandra Analyzer builds upon the foundation laid by several open-source projects, particularly Apache Cassandra. We extend our sincere gratitude to the Apache Cassandra community for their outstanding work and contributions to the field of distributed databases.
+Cassandra AxonOps Analyzer builds upon the foundation laid by several open-source projects, particularly Apache Cassandra. We extend our sincere gratitude to the Apache Cassandra community for their outstanding work and contributions to the field of distributed databases.
 
 Apache Cassandra is a free and open-source, distributed, wide-column store, NoSQL database management system designed to handle large amounts of data across many commodity servers, providing high availability with no single point of failure.
 
@@ -295,9 +295,9 @@ Apache Cassandra is a free and open-source, distributed, wide-column store, NoSQ
 - **Source Code**: Available on [GitHub](https://github.com/apache/cassandra) or the Apache Git repository at [gitbox.apache.org/repos/asf/cassandra.git](https://gitbox.apache.org/repos/asf/cassandra.git)
 - **Documentation**: Comprehensive guides and references available at the [Apache Cassandra website](https://cassandra.apache.org/doc/latest/)
 
-Cassandra Analyzer incorporates and extends functionality from various Cassandra tools and utilities, enhancing them to provide comprehensive cluster analysis capabilities for Cassandra operators and DBAs.
+Cassandra AxonOps Analyzer incorporates and extends functionality from various Cassandra tools and utilities, enhancing them to provide comprehensive cluster analysis capabilities for Cassandra operators and DBAs.
 
-We encourage users to explore and contribute to the main Apache Cassandra project, as well as to provide feedback and suggestions for Cassandra Analyzer through our GitHub discussions and issues pages.
+We encourage users to explore and contribute to the main Apache Cassandra project, as well as to provide feedback and suggestions for Cassandra AxonOps Analyzer through our GitHub discussions and issues pages.
 
 ## ⚖️ Legal Notices
 
