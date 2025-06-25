@@ -29,6 +29,7 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
+!cassandra-analyzer.spec
 
 # Installer logs
 pip-log.txt
@@ -208,9 +209,10 @@ aws-env.sh
 
 # PyInstaller artifacts
 *.spec
+!cassandra-analyzer.spec
 build/
 dist/
-cassandra_analyzer_main.py
+!cassandra_analyzer_main.py
 
 # Documentation build
 docs/site/
