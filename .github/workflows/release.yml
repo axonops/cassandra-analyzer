@@ -81,38 +81,15 @@ jobs:
         bandit -r cassandra_analyzer -ll -i -f json -o bandit-report.json || true
         bandit -r cassandra_analyzer -ll -i || true
 
-  build-and-publish:
+  create-release:
     needs: [determine-release-type, test, security]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install build wheel twine
-    
-    - name: Build package
-      run: python -m build
-    
-    - name: Check package
-      run: twine check dist/*
-    
-    # TODO: Enable PyPI publishing when ready
-    # - name: Publish to PyPI
-    #   uses: pypa/gh-action-pypi-publish@release/v1
-    #   with:
-    #     skip-existing: true
-    
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
-        files: dist/*
         generate_release_notes: true
         prerelease: ${{ needs.determine-release-type.outputs.is_prerelease }}
         body: |
@@ -134,7 +111,7 @@ jobs:
           ```
 
   build-executables:
-    needs: [build-and-publish, determine-release-type, test, security]
+    needs: [create-release, determine-release-type, test, security]
     strategy:
       matrix:
         include:
