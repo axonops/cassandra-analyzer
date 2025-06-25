@@ -235,6 +235,13 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         gh release upload ${{ github.ref_name }} dist/${{ matrix.artifact_name }}#${{ matrix.asset_name }} --clobber
+    
+    - name: Upload Linux executable as artifact (for package building)
+      if: matrix.os == 'ubuntu-22.04'
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-executable
+        path: dist/${{ matrix.artifact_name }}
 
   build-linux-packages:
     needs: [build-executables, determine-release-type]
@@ -242,20 +249,16 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Wait for release assets
-      run: sleep 30
-    
-    - name: Download Linux executable from release
-      uses: robinraju/release-downloader@v1.8
+    - name: Download Linux executable artifact
+      uses: actions/download-artifact@v4
       with:
-        tag: ${{ github.ref_name }}
-        fileName: "cassandra-analyzer-linux-amd64"
-        out-file-path: "."
+        name: linux-executable
+        path: .
     
     - name: Prepare executable
       run: |
-        mv cassandra-analyzer-linux-amd64 cassandra-analyzer
         chmod +x cassandra-analyzer
+        ls -la cassandra-analyzer
     
     - name: Install packaging tools
       run: |
