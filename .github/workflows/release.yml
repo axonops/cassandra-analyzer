@@ -51,10 +51,11 @@ jobs:
     - name: Check package
       run: twine check dist/*
     
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        skip-existing: true
+    # TODO: Enable PyPI publishing when ready
+    # - name: Publish to PyPI
+    #   uses: pypa/gh-action-pypi-publish@release/v1
+    #   with:
+    #     skip-existing: true
     
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
@@ -69,12 +70,18 @@ jobs:
           
           ## Installation
           
+          ### Option 1: Download Executable
+          Download the appropriate executable for your platform from the assets below.
+          
+          ### Option 2: Install from Source
           ```bash
-          pip install cassandra-axonops-analyzer==${{ github.ref_name }}
+          git clone https://github.com/axonops/cassandra-analyzer.git
+          cd cassandra-analyzer
+          pip install -r requirements.txt
+          pip install -e .
           ```
           
-          ## Docker Image
-          
+          ### Option 3: Docker Image
           ```bash
           docker pull ghcr.io/axonops/cassandra-analyzer:${{ github.ref_name }}
           ```
