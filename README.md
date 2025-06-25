@@ -26,7 +26,7 @@
 
 ## 🚀 Overview
 
-Cassandra Analyzer is a powerful diagnostic tool that performs comprehensive analysis of Apache Cassandra® clusters using the AxonOps monitoring platform. Unlike traditional diagnostic tools that require manual collection of logs and metrics, Cassandra Analyzer connects directly to your AxonOps instance to provide real-time insights and recommendations.
+Cassandra Analyzer is a powerful diagnostic tool that performs comprehensive analysis of Apache Cassandra® clusters using the [AxonOps](https://axonops.com) monitoring platform. Unlike traditional diagnostic tools that require manual collection of logs and metrics, Cassandra Analyzer connects directly to your AxonOps instance to provide real-time insights and recommendations.
 
 ### ✨ Key Features
 
@@ -50,7 +50,7 @@ Cassandra Analyzer is a powerful diagnostic tool that performs comprehensive ana
 ## 📋 Requirements
 
 - Python 3.8 or higher
-- Access to AxonOps monitoring platform
+- Access to [AxonOps](https://axonops.com) monitoring platform
 - AxonOps API token with appropriate permissions
 
 ## 🔧 Installation
@@ -296,6 +296,8 @@ We encourage users to explore and contribute to the main Apache Cassandra projec
 ## ⚖️ Legal Notices
 
 This project may contain trademarks or logos for projects, products, or services. Any use of third-party trademarks or logos are subject to those third-party's policies.
+
+**Important**: This project is not affiliated with, endorsed by, or sponsored by the Apache Software Foundation or the Apache Cassandra project. It is an independent tool developed by [AxonOps](https://axonops.com) to analyze Apache Cassandra clusters.
 
 - **AxonOps** is a registered trademark of AxonOps Limited.
 - **Apache**, **Apache Cassandra**, **Cassandra**, **Apache Spark**, **Spark**, **Apache TinkerPop**, **TinkerPop**, **Apache Kafka** and **Kafka** are either registered trademarks or trademarks of the Apache Software Foundation or its subsidiaries in Canada, the United States and/or other countries.
