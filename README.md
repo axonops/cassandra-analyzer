@@ -2,7 +2,7 @@
   <img src="logo.svg" alt="Cassandra AxonOps Analyzer Logo" width="200">
 </p>
 
-<h1 align="center">Cassandra® AxonOps Analyser</h1>
+<h1 align="center">Cassandra® AxonOps Analyzer</h1>
 
 <p align="center">
   <strong>Comprehensive Cassandra Cluster Analysis Tool Powered by AxonOps™</strong>
@@ -61,48 +61,101 @@ Cassandra AxonOps Analyzer is a powerful diagnostic tool that performs comprehen
 
 ## 🔧 Installation
 
-### From PyPI (Coming Soon)
+You have multiple options for installing and running Cassandra AxonOps Analyzer:
 
-The package will be available on PyPI soon. In the meantime, please install from source or use the standalone executables.
+### Option 1: Run Directly from Source (Recommended for Development)
+
+This is the best option if you want to:
+- Contribute to the project
+- Always have the latest changes
+- Modify the code for your needs
+- Avoid downloading large executables
+
+```bash
+# Clone the repository
+git clone https://github.com/axonops/cassandra-analyzer.git
+cd cassandra-analyzer
+
+# Create a virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install the package in development mode
+pip install -r requirements.txt
+pip install -e .
+
+# Run the analyzer
+cassandra-analyzer --config config.yaml
+
+# Or run directly with Python
+python -m cassandra_analyzer --config config.yaml
+```
+
+### Option 2: Install from PyPI (Coming Soon)
+
+Once published, this will be the easiest option for regular users:
 
 ```bash
 # Coming soon:
 # pip install cassandra-axonops-analyzer
+# cassandra-analyzer --config config.yaml
 ```
 
-### From Source (Currently Recommended)
+### Option 3: Use Standalone Executables (No Python Required)
 
-```bash
-git clone https://github.com/axonops/cassandra-analyzer.git
-cd cassandra-analyzer
-pip install -r requirements.txt
-pip install -e .
-```
-
-### Using Standalone Executable
+Perfect if you:
+- Don't have Python installed
+- Want a simple, single-file solution
+- Need to distribute to non-technical users
 
 Download pre-built executables from the [releases page](https://github.com/axonops/cassandra-analyzer/releases):
 
 #### Direct Download
-- **Linux**: `cassandra-analyzer-linux-amd64`
-- **macOS (Intel)**: `cassandra-analyzer-macos-amd64`
-- **macOS (Apple Silicon)**: `cassandra-analyzer-macos-arm64`
-- **Windows**: `cassandra-analyzer-windows-amd64.exe`
+| Platform | File | Size | Notes |
+|----------|------|------|-------|
+| **Linux** | `cassandra-analyzer-linux-amd64` | ~53MB | Works on most Linux distributions |
+| **macOS Intel** | `cassandra-analyzer-macos-amd64` | ~53MB | For Intel-based Macs |
+| **macOS Apple Silicon** | `cassandra-analyzer-macos-arm64` | ~53MB | For M1/M2/M3 Macs |
+| **Windows** | `cassandra-analyzer-windows-amd64.exe` | ~53MB | Windows 10/11 64-bit |
 
-#### Linux Package Managers
+```bash
+# Linux/macOS: Make executable and run
+chmod +x cassandra-analyzer-*
+./cassandra-analyzer-linux-amd64 --config config.yaml
+
+# Windows: Run directly
+cassandra-analyzer-windows-amd64.exe --config config.yaml
+```
+
+### Option 4: Linux Package Managers
+
+For system-wide installation on Linux:
 
 **DEB (Debian/Ubuntu)**:
 ```bash
-# Download from releases page
+# Download and install
 wget https://github.com/axonops/cassandra-analyzer/releases/download/vX.X.X/cassandra-analyzer_X.X.X_amd64.deb
 sudo dpkg -i cassandra-analyzer_X.X.X_amd64.deb
+
+# Run from anywhere
+cassandra-analyzer --config config.yaml
 ```
 
 **RPM (RHEL/CentOS/Fedora)**:
 ```bash
-# Download from releases page
+# Download and install
 wget https://github.com/axonops/cassandra-analyzer/releases/download/vX.X.X/cassandra-analyzer-X.X.X-1.x86_64.rpm
 sudo rpm -i cassandra-analyzer-X.X.X-1.x86_64.rpm
+
+# Run from anywhere
+cassandra-analyzer --config config.yaml
+```
+
+### Option 5: Docker (Coming Soon)
+
+```bash
+# Coming soon:
+# docker run -v $(pwd)/config.yaml:/config.yaml ghcr.io/axonops/cassandra-analyzer
 ```
 
 ## 🚀 Quick Start
@@ -132,6 +185,10 @@ cassandra-analyzer --config config.yaml
 3. **View the generated report** in the `reports` directory.
 
 ## 📖 Documentation
+
+- [Build Guide](BUILD.md) - Detailed instructions for building executables, packages, and Docker images
+- [Contributing Guide](CONTRIBUTING.md) - How to contribute to the project
+- [Change Log](CHANGELOG.md) - Version history and changes
 
 ### Command Line Options
 
@@ -210,24 +267,28 @@ cassandra-analyzer/
 
 ## 🧪 Development
 
-### Quick Start
+### Quick Start for Developers
 
 ```bash
 # Clone the repository
 git clone https://github.com/axonops/cassandra-analyzer.git
 cd cassandra-analyzer
 
+# Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
 # Install development dependencies
 make install-dev
+
+# Run the project directly from source
+python -m cassandra_analyzer --config config.yaml
 
 # Run tests
 make test
 
 # Run linting
 make lint
-
-# Format code
-make format
 
 # Run all CI checks locally
 make ci
@@ -237,16 +298,46 @@ make ci
 
 ```bash
 make help         # Show all available commands
+make install      # Install production dependencies
+make install-dev  # Install development dependencies
 make test         # Run unit tests
 make test-coverage # Run tests with coverage report
 make lint         # Run code linters
 make format       # Auto-format code
 make type-check   # Run type checking
 make security-check # Run security scan
-make build        # Build distribution packages
+make build        # Build Python distribution packages
+make build-exe    # Build standalone executable for your platform
+make build-exe-onedir # Build executable in folder mode (for debugging)
 make docker-build # Build Docker image
 make run-example  # Run with example configuration
+make clean        # Clean all build artifacts
+make ci           # Run all CI checks locally
 ```
+
+### Building Executables
+
+The project supports building standalone executables that bundle Python and all dependencies:
+
+```bash
+# Install development dependencies (includes PyInstaller)
+make install-dev
+
+# Build executable for your current platform
+make build-exe
+
+# The executable will be in dist/
+# Linux/macOS: dist/cassandra-analyzer
+# Windows: dist/cassandra-analyzer.exe
+
+# Test the executable
+./dist/cassandra-analyzer --help
+
+# Build in one-folder mode (useful for debugging)
+make build-exe-onedir
+```
+
+**Note**: Executables are platform-specific. You can only build for the platform you're currently on. For cross-platform builds, use the GitHub Actions release workflow.
 
 ### Testing
 
@@ -269,57 +360,21 @@ pytest-watch
 tox
 ```
 
-### Building Standalone Executables
+### Building from Source
 
-You can build standalone executables locally using PyInstaller:
+For detailed build instructions including executables, packages, and Docker images, see our [Build Guide](BUILD.md).
 
-```bash
-# Install development dependencies (includes PyInstaller)
-make install-dev
-
-# Build executable for your current platform
-make build-exe
-
-# The executable will be in the dist/ directory
-./dist/cassandra-analyzer --help
-
-# Build in one-folder mode (useful for debugging)
-make build-exe-onedir
-```
-
-#### Platform-Specific Notes
-
-- **Linux**: The executable is built as `cassandra-analyzer`
-- **macOS**: The executable is built as `cassandra-analyzer`
-- **Windows**: The executable is built as `cassandra-analyzer.exe`
-
-#### Building Linux Packages
-
-To build DEB and RPM packages locally, you need `fpm`:
+Quick build commands:
 
 ```bash
-# Install fpm (requires Ruby)
-sudo gem install --no-document fpm
+# Build Python packages
+make build
 
-# Build the executable first
+# Build standalone executable
 make build-exe
 
-# Then use fpm to create packages
-# DEB package
-fpm -s dir -t deb \
-  -n cassandra-analyzer \
-  -v 0.1.0 \
-  --description "Comprehensive Cassandra cluster analysis tool" \
-  --architecture amd64 \
-  dist/cassandra-analyzer=/usr/bin/
-
-# RPM package  
-fpm -s dir -t rpm \
-  -n cassandra-analyzer \
-  -v 0.1.0 \
-  --description "Comprehensive Cassandra cluster analysis tool" \
-  --architecture x86_64 \
-  dist/cassandra-analyzer=/usr/bin/
+# Build Docker image
+make docker-build
 ```
 
 ## 🤝 Contributing

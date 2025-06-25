@@ -229,25 +229,86 @@ This section lists the labels we use to help us track and manage issues and pull
 
 ## Development Setup
 
-1. Fork and clone the repository
-2. Create a virtual environment:
+### Initial Setup
+
+1. Fork the repository on GitHub
+2. Clone your fork:
    ```bash
-   python -m venv venv
+   git clone https://github.com/your-username/cassandra-analyzer.git
+   cd cassandra-analyzer
+   ```
+
+3. Create a virtual environment:
+   ```bash
+   python3 -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
-3. Install dependencies:
+
+4. Install development dependencies:
    ```bash
+   # Using make (recommended)
+   make install-dev
+   
+   # Or manually
    pip install -r requirements.txt
    pip install -r requirements-dev.txt
-   ```
-4. Install pre-commit hooks:
-   ```bash
+   pip install -e .
    pre-commit install
    ```
+
 5. Create a branch for your changes:
    ```bash
    git checkout -b feature/your-feature-name
    ```
+
+### Running the Project
+
+You have several options for running the analyzer during development:
+
+1. **Run directly from source** (recommended for development):
+   ```bash
+   # Using the installed command (after pip install -e .)
+   cassandra-analyzer --config config.yaml
+   
+   # Or using Python module
+   python -m cassandra_analyzer --config config.yaml
+   ```
+
+2. **Build and test an executable**:
+   ```bash
+   # Build executable for your platform
+   make build-exe
+   
+   # Test it (executable will be in dist/)
+   ./dist/cassandra-analyzer --config config.yaml
+   ```
+
+3. **Run with example configuration**:
+   ```bash
+   make run-example
+   ```
+
+### Available Make Commands
+
+The project includes a comprehensive Makefile for common tasks:
+
+```bash
+make help              # Show all available commands
+make install           # Install production dependencies
+make install-dev       # Install development dependencies
+make test              # Run unit tests  
+make test-coverage     # Run tests with coverage report
+make lint              # Run code linters
+make format            # Auto-format code
+make type-check        # Run type checking
+make security-check    # Run security scan
+make build             # Build Python distribution packages
+make build-exe         # Build standalone executable
+make build-exe-onedir  # Build executable in folder mode
+make docker-build      # Build Docker image
+make clean             # Clean build artifacts
+make ci                # Run all CI checks locally
+```
 
 ### Pre-commit Hooks
 
