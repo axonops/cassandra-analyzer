@@ -151,6 +151,7 @@ The executable will be in the `dist/` directory:
 - **Size**: Executables are approximately 53MB (includes Python interpreter and all dependencies)
 - **Platform-specific**: You can only build for the platform you're currently on
 - **Performance**: First startup may be slower as the executable extracts itself
+- **Limitations**: PDF generation is NOT available in executables due to system dependencies (WeasyPrint requires Cairo, Pango, etc.)
 
 ## Building Linux Packages
 

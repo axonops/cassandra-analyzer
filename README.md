@@ -230,17 +230,43 @@ analysis:
 
 ### PDF Generation
 
-To generate PDF reports, install additional dependencies:
+**Note**: PDF generation requires additional system dependencies that are NOT included in standalone executables.
+
+#### When Running from Source
+
+Install WeasyPrint and its dependencies:
 
 ```bash
-pip install weasyprint
-```
+# Install Python packages
+pip install weasyprint markdown beautifulsoup4
 
-Then run with the `--pdf` flag:
+# Install system dependencies
+# Ubuntu/Debian:
+sudo apt-get install python3-cffi python3-brotli libpango-1.0-0 libpangoft2-1.0-0
 
-```bash
+# macOS:
+brew install pango
+
+# Then run with --pdf flag
 cassandra-analyzer --config config.yaml --pdf
 ```
+
+#### When Using Standalone Executables
+
+PDF generation is **NOT available** in standalone executables due to system dependencies. Options:
+
+1. **Use Markdown output** (default) and convert separately:
+   ```bash
+   # Generate markdown report
+   ./cassandra-analyzer --config config.yaml
+   
+   # Convert using pandoc or other tools
+   pandoc reports/report.md -o report.pdf
+   ```
+
+2. **Run from source** if you need PDF generation
+
+3. **Use Docker** (includes all dependencies) - coming soon
 
 ### Programmatic Usage
 

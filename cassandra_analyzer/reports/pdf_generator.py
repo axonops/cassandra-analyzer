@@ -12,11 +12,11 @@ try:
     from weasyprint import HTML, CSS
     from weasyprint.text.fonts import FontConfiguration
     from bs4 import BeautifulSoup
+    PDF_AVAILABLE = True
 except ImportError as e:
-    raise ImportError(
-        "PDF generation dependencies not installed. "
-        "Install with: pip install weasyprint markdown beautifulsoup4"
-    ) from e
+    PDF_AVAILABLE = False
+    # Don't raise immediately - let the user know when they try to use it
+    _pdf_import_error = e
 
 logger = structlog.get_logger()
 
@@ -25,7 +25,11 @@ class PDFGenerator:
     """Generates PDF reports from markdown files"""
     
     def __init__(self):
-        self.font_config = FontConfiguration()
+        self.pdf_available = PDF_AVAILABLE
+        if PDF_AVAILABLE:
+            self.font_config = FontConfiguration()
+        else:
+            self.font_config = None
         
     def generate_pdf(self, markdown_path: Path, pdf_path: Optional[Path] = None) -> Path:
         """
@@ -39,6 +43,22 @@ class PDFGenerator:
         Returns:
             Path to the generated PDF file
         """
+        if not self.pdf_available:
+            import sys
+            if getattr(sys, 'frozen', False):
+                # Running in a PyInstaller bundle
+                raise ImportError(
+                    "PDF generation is not available in standalone executables. "
+                    "Please use the markdown output or run from source with WeasyPrint installed. "
+                    "See: https://github.com/axonops/cassandra-analyzer#pdf-generation"
+                )
+            else:
+                # Running from source
+                raise ImportError(
+                    "PDF generation dependencies not installed. "
+                    "Install with: pip install weasyprint markdown beautifulsoup4"
+                ) from _pdf_import_error
+        
         if not markdown_path.exists():
             raise FileNotFoundError(f"Markdown file not found: {markdown_path}")
             

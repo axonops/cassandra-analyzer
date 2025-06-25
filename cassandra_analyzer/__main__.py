@@ -20,7 +20,7 @@ logger = structlog.get_logger()
 @click.option("--config", type=click.Path(exists=True), required=True, help="Configuration file path (required)")
 @click.option("--output-dir", default="./reports", help="Output directory for reports")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-@click.option("--pdf", is_flag=True, help="Also generate PDF report (requires wkhtmltopdf)")
+@click.option("--pdf", is_flag=True, help="Also generate PDF report (requires WeasyPrint, not available in executables)")
 def main(config, output_dir, verbose, pdf):
     """
     Analyze a Cassandra cluster using AxonOps API data
