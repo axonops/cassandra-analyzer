@@ -108,6 +108,8 @@ Perfect if you:
 - Want a simple, single-file solution
 - Need to distribute to non-technical users
 
+> **⚠️ Security Note**: The executables are not code-signed. Your operating system may warn you about running unsigned software. See [platform-specific instructions](#platform-specific-instructions) below for handling these warnings safely.
+
 Download pre-built executables from the [releases page](https://github.com/axonops/cassandra-analyzer/releases):
 
 #### Direct Download
@@ -126,6 +128,72 @@ chmod +x cassandra-analyzer-*
 # Windows: Run directly
 cassandra-analyzer-windows-amd64.exe --config config.yaml
 ```
+
+#### Platform-Specific Instructions
+
+##### macOS Security (Gatekeeper)
+
+macOS will block unsigned executables. You have several options:
+
+**Option 1: Remove quarantine attribute (Recommended)**
+```bash
+# Download the file
+curl -L -o cassandra-analyzer https://github.com/axonops/cassandra-analyzer/releases/download/vX.X.X/cassandra-analyzer-macos-arm64
+
+# Remove quarantine attribute
+xattr -d com.apple.quarantine cassandra-analyzer
+
+# Make executable and run
+chmod +x cassandra-analyzer
+./cassandra-analyzer --config config.yaml
+```
+
+**Option 2: Right-click method**
+1. Download the executable
+2. In Finder, right-click the file and select "Open"
+3. Click "Open" in the security dialog
+4. Close the terminal that opens
+5. Now you can run it normally from Terminal
+
+**Option 3: System Preferences**
+1. Try to run the executable: `./cassandra-analyzer --config config.yaml`
+2. When blocked, go to System Settings > Privacy & Security
+3. Click "Allow Anyway" next to the cassandra-analyzer message
+4. Try running again and click "Open" when prompted
+
+##### Windows Security (SmartScreen)
+
+Windows may show a SmartScreen warning for unsigned executables:
+
+1. When you run the .exe file, Windows may show "Windows protected your PC"
+2. Click "More info"
+3. Click "Run anyway"
+
+**To avoid future warnings:**
+```powershell
+# PowerShell (as Administrator)
+# Add file to exclusion list
+Add-MpPreference -ExclusionPath "C:\path\to\cassandra-analyzer-windows-amd64.exe"
+```
+
+##### Linux
+
+Linux typically doesn't block unsigned binaries, but ensure it's executable:
+```bash
+# Download
+wget https://github.com/axonops/cassandra-analyzer/releases/download/vX.X.X/cassandra-analyzer-linux-amd64
+
+# Make executable
+chmod +x cassandra-analyzer-linux-amd64
+
+# Run
+./cassandra-analyzer-linux-amd64 --config config.yaml
+```
+
+If you get "Permission denied" even after chmod:
+- Check if the filesystem is mounted with `noexec`
+- Check SELinux/AppArmor policies
+- Try running from your home directory
 
 ### Option 4: Linux Package Managers
 
