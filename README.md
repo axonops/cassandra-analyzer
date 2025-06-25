@@ -1,6 +1,12 @@
 # Cassandra Analyzer
 
 <p align="center">
+  <img src="logo.svg" alt="Cassandra Analyzer Logo" width="400">
+</p>
+
+> ⚠️ **DEVELOPMENT STATUS**: This project is currently under active development and is not yet ready for production use. Features may change, and stability is not guaranteed. Please wait for the official release announcement before using in production environments.
+
+<p align="center">
   <strong>Comprehensive Cassandra Cluster Analysis Tool Powered by AxonOps</strong>
 </p>
 

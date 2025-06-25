@@ -1,0 +1,75 @@
+<svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background Circle -->
+  <circle cx="200" cy="200" r="190" fill="#1a1a2e" stroke="#0f4c75" stroke-width="4"/>
+  
+  <!-- Cassandra-inspired hexagonal pattern -->
+  <g transform="translate(200, 200)">
+    <!-- Central hexagon -->
+    <polygon points="0,-40 35,-20 35,20 0,40 -35,20 -35,-20" 
+             fill="none" stroke="#3282b8" stroke-width="3" opacity="0.8"/>
+    
+    <!-- Surrounding hexagons representing distributed nodes -->
+    <g opacity="0.6">
+      <polygon points="0,-90 35,-70 35,-30 0,-10 -35,-30 -35,-70" 
+               fill="none" stroke="#3282b8" stroke-width="2"/>
+      <polygon points="60,-45 95,-25 95,15 60,35 25,15 25,-25" 
+               fill="none" stroke="#3282b8" stroke-width="2"/>
+      <polygon points="60,45 95,65 95,105 60,125 25,105 25,65" 
+               fill="none" stroke="#3282b8" stroke-width="2"/>
+      <polygon points="0,90 35,110 35,150 0,170 -35,150 -35,110" 
+               fill="none" stroke="#3282b8" stroke-width="2"/>
+      <polygon points="-60,45 -25,65 -25,105 -60,125 -95,105 -95,65" 
+               fill="none" stroke="#3282b8" stroke-width="2"/>
+      <polygon points="-60,-45 -25,-25 -25,15 -60,35 -95,15 -95,-25" 
+               fill="none" stroke="#3282b8" stroke-width="2"/>
+    </g>
+    
+    <!-- Connecting lines representing data flow -->
+    <g stroke="#0f4c75" stroke-width="1.5" opacity="0.5">
+      <line x1="0" y1="-40" x2="0" y2="-90"/>
+      <line x1="35" y1="-20" x2="60" y2="-45"/>
+      <line x1="35" y1="20" x2="60" y2="45"/>
+      <line x1="0" y1="40" x2="0" y2="90"/>
+      <line x1="-35" y1="20" x2="-60" y2="45"/>
+      <line x1="-35" y1="-20" x2="-60" y2="-45"/>
+    </g>
+  </g>
+  
+  <!-- Analytics visualization elements -->
+  <g transform="translate(200, 200)">
+    <!-- Bar chart icon in center -->
+    <g transform="scale(0.8)">
+      <rect x="-25" y="5" width="8" height="15" fill="#00adb5" opacity="0.9"/>
+      <rect x="-12" y="-5" width="8" height="25" fill="#00adb5" opacity="0.9"/>
+      <rect x="1" y="-10" width="8" height="30" fill="#00adb5" opacity="0.9"/>
+      <rect x="14" y="0" width="8" height="20" fill="#00adb5" opacity="0.9"/>
+    </g>
+    
+    <!-- Data points -->
+    <circle cx="-70" cy="-70" r="3" fill="#bbe1fa"/>
+    <circle cx="70" cy="-70" r="3" fill="#bbe1fa"/>
+    <circle cx="70" cy="70" r="3" fill="#bbe1fa"/>
+    <circle cx="-70" cy="70" r="3" fill="#bbe1fa"/>
+  </g>
+  
+  <!-- AxonOps-inspired monitoring waves -->
+  <g transform="translate(200, 200)" opacity="0.7">
+    <path d="M -120,0 Q -90,-20 -60,0 T 0,0 T 60,0 T 120,0" 
+          fill="none" stroke="#00adb5" stroke-width="2"/>
+    <path d="M -120,0 Q -90,20 -60,0 T 0,0 T 60,0 T 120,0" 
+          fill="none" stroke="#00adb5" stroke-width="2" transform="rotate(45)"/>
+    <path d="M -120,0 Q -90,-20 -60,0 T 0,0 T 60,0 T 120,0" 
+          fill="none" stroke="#00adb5" stroke-width="2" transform="rotate(-45)"/>
+  </g>
+  
+  <!-- Subtle glow effect -->
+  <defs>
+    <radialGradient id="glow">
+      <stop offset="0%" stop-color="#3282b8" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#3282b8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="200" cy="200" r="100" fill="url(#glow)"/>
+  
+
+</svg>
