@@ -4,6 +4,7 @@ include requirements.txt
 include requirements-dev.txt
 include pyproject.toml
 include logo.svg
+include cassandra-analyzer.spec
 recursive-include cassandra_analyzer/templates *.j2
 recursive-include cassandra_analyzer/config *.yaml
 recursive-include tests *.py

@@ -79,13 +79,31 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Using Standalone Executable (Coming Soon)
+### Using Standalone Executable
 
-Pre-built executables will be available from the [releases page](https://github.com/axonops/cassandra-analyzer/releases) soon:
+Download pre-built executables from the [releases page](https://github.com/axonops/cassandra-analyzer/releases):
 
-- **Linux**: `cassandra-analyzer-linux-amd64` (coming soon)
-- **macOS**: `cassandra-analyzer-macos-amd64` (coming soon)
-- **Windows**: `cassandra-analyzer-windows-amd64.exe` (coming soon)
+#### Direct Download
+- **Linux**: `cassandra-analyzer-linux-amd64`
+- **macOS (Intel)**: `cassandra-analyzer-macos-amd64`
+- **macOS (Apple Silicon)**: `cassandra-analyzer-macos-arm64`
+- **Windows**: `cassandra-analyzer-windows-amd64.exe`
+
+#### Linux Package Managers
+
+**DEB (Debian/Ubuntu)**:
+```bash
+# Download from releases page
+wget https://github.com/axonops/cassandra-analyzer/releases/download/vX.X.X/cassandra-analyzer_X.X.X_amd64.deb
+sudo dpkg -i cassandra-analyzer_X.X.X_amd64.deb
+```
+
+**RPM (RHEL/CentOS/Fedora)**:
+```bash
+# Download from releases page
+wget https://github.com/axonops/cassandra-analyzer/releases/download/vX.X.X/cassandra-analyzer-X.X.X-1.x86_64.rpm
+sudo rpm -i cassandra-analyzer-X.X.X-1.x86_64.rpm
+```
 
 ## 🚀 Quick Start
 
@@ -249,6 +267,59 @@ pytest-watch
 
 # Test multiple Python versions
 tox
+```
+
+### Building Standalone Executables
+
+You can build standalone executables locally using PyInstaller:
+
+```bash
+# Install development dependencies (includes PyInstaller)
+make install-dev
+
+# Build executable for your current platform
+make build-exe
+
+# The executable will be in the dist/ directory
+./dist/cassandra-analyzer --help
+
+# Build in one-folder mode (useful for debugging)
+make build-exe-onedir
+```
+
+#### Platform-Specific Notes
+
+- **Linux**: The executable is built as `cassandra-analyzer`
+- **macOS**: The executable is built as `cassandra-analyzer`
+- **Windows**: The executable is built as `cassandra-analyzer.exe`
+
+#### Building Linux Packages
+
+To build DEB and RPM packages locally, you need `fpm`:
+
+```bash
+# Install fpm (requires Ruby)
+sudo gem install --no-document fpm
+
+# Build the executable first
+make build-exe
+
+# Then use fpm to create packages
+# DEB package
+fpm -s dir -t deb \
+  -n cassandra-analyzer \
+  -v 0.1.0 \
+  --description "Comprehensive Cassandra cluster analysis tool" \
+  --architecture amd64 \
+  dist/cassandra-analyzer=/usr/bin/
+
+# RPM package  
+fpm -s dir -t rpm \
+  -n cassandra-analyzer \
+  -v 0.1.0 \
+  --description "Comprehensive Cassandra cluster analysis tool" \
+  --architecture x86_64 \
+  dist/cassandra-analyzer=/usr/bin/
 ```
 
 ## 🤝 Contributing

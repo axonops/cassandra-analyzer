@@ -81,6 +81,22 @@ security-check: ## Run security checks with bandit
 build: clean ## Build distribution packages
 	$(PYTHON) -m build
 
+build-exe: clean ## Build standalone executable using PyInstaller
+	@echo "$(BLUE)Building standalone executable...$(NC)"
+	pyinstaller cassandra-analyzer.spec --clean
+	@echo "$(GREEN)Executable built successfully in dist/$(NC)"
+
+build-exe-onedir: clean ## Build executable in one-folder mode (for debugging)
+	@echo "$(BLUE)Building executable in one-folder mode...$(NC)"
+	pyinstaller cassandra-analyzer.spec --onedir --clean
+	@echo "$(GREEN)Executable built successfully in dist/$(NC)"
+
+build-all-exe: ## Build executables for all platforms (requires appropriate environment)
+	@echo "$(BLUE)Building executables for all platforms...$(NC)"
+	@echo "$(YELLOW)Note: Cross-platform builds require appropriate build environments$(NC)"
+	make build-exe
+	@echo "$(GREEN)Build complete for current platform$(NC)"
+
 docker-build: ## Build Docker image
 	docker build -t cassandra-analyzer:latest .
 

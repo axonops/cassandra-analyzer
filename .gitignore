@@ -210,6 +210,7 @@ aws-env.sh
 *.spec
 build/
 dist/
+cassandra_analyzer_main.py
 
 # Documentation build
 docs/site/
