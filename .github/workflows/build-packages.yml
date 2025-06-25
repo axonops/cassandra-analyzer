@@ -1,10 +1,9 @@
-name: Build Linux Packages
+# This workflow has been integrated into the main release workflow
+# Keeping this file for reference but disabled
+name: Build Linux Packages (Disabled)
 
 on:
-  workflow_run:
-    workflows: ["Release"]
-    types:
-      - completed
+  workflow_dispatch:  # Manual trigger only, effectively disabled
 
 jobs:
   build-linux-packages:

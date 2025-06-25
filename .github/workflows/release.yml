@@ -236,6 +236,152 @@ jobs:
       run: |
         gh release upload ${{ github.ref_name }} dist/${{ matrix.artifact_name }}#${{ matrix.asset_name }} --clobber
 
+  build-linux-packages:
+    needs: [build-executables, determine-release-type]
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Wait for release assets
+      run: sleep 30
+    
+    - name: Download Linux executable from release
+      uses: robinraju/release-downloader@v1.8
+      with:
+        tag: ${{ github.ref_name }}
+        fileName: "cassandra-analyzer-linux-amd64"
+        out-file-path: "."
+    
+    - name: Prepare executable
+      run: |
+        mv cassandra-analyzer-linux-amd64 cassandra-analyzer
+        chmod +x cassandra-analyzer
+    
+    - name: Install packaging tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ruby ruby-dev rubygems build-essential rpm
+        sudo gem install --no-document fpm
+    
+    - name: Create package directories
+      run: |
+        # DEB package structure
+        mkdir -p deb/usr/bin
+        mkdir -p deb/usr/share/doc/cassandra-analyzer
+        mkdir -p deb/usr/share/man/man1
+        
+        # RPM package structure
+        mkdir -p rpm/usr/bin
+        mkdir -p rpm/usr/share/doc/cassandra-analyzer
+        mkdir -p rpm/usr/share/man/man1
+        
+        # Copy files
+        cp cassandra-analyzer deb/usr/bin/
+        cp cassandra-analyzer rpm/usr/bin/
+        cp README.md LICENSE deb/usr/share/doc/cassandra-analyzer/
+        cp README.md LICENSE rpm/usr/share/doc/cassandra-analyzer/
+    
+    - name: Create man page
+      run: |
+        cat > cassandra-analyzer.1 << 'EOF'
+        .TH CASSANDRA-ANALYZER 1 "$(date +'%B %Y')" "cassandra-analyzer ${{ github.ref_name }}" "User Commands"
+        .SH NAME
+        cassandra-analyzer \- Comprehensive Cassandra cluster analysis tool powered by AxonOps
+        .SH SYNOPSIS
+        .B cassandra-analyzer
+        [\fIOPTIONS\fR]
+        .SH DESCRIPTION
+        Cassandra AxonOps Analyzer is a powerful diagnostic tool that performs comprehensive analysis of Apache Cassandra clusters.
+        .SH OPTIONS
+        .TP
+        .B \-\-config PATH
+        Path to configuration file (required)
+        .TP
+        .B \-\-output\-dir PATH
+        Output directory for reports (default: ./reports)
+        .TP
+        .B \-\-verbose
+        Enable verbose logging
+        .TP
+        .B \-\-pdf
+        Generate PDF report in addition to Markdown
+        .TP
+        .B \-\-help
+        Show help message and exit
+        .SH FILES
+        .TP
+        .I config.yaml
+        Configuration file for the analyzer
+        .SH ENVIRONMENT
+        .TP
+        .B AXONOPS_API_TOKEN
+        AxonOps API token (alternative to config file)
+        .TP
+        .B CA_LOG_LEVEL
+        Log level (DEBUG, INFO, WARNING, ERROR)
+        .SH SEE ALSO
+        Project homepage: https://github.com/axonops/cassandra-analyzer
+        .SH AUTHOR
+        AxonOps Team <support@axonops.com>
+        EOF
+        
+        cp cassandra-analyzer.1 deb/usr/share/man/man1/
+        cp cassandra-analyzer.1 rpm/usr/share/man/man1/
+        gzip -9 deb/usr/share/man/man1/cassandra-analyzer.1
+        gzip -9 rpm/usr/share/man/man1/cassandra-analyzer.1
+    
+    - name: Build DEB package
+      run: |
+        VERSION="${{ github.ref_name }}"
+        VERSION="${VERSION#v}"  # Remove 'v' prefix
+        fpm -s dir -t deb \
+          -n cassandra-analyzer \
+          -v "${VERSION}" \
+          --description "Comprehensive Cassandra cluster analysis tool powered by AxonOps" \
+          --url "https://github.com/axonops/cassandra-analyzer" \
+          --license "Apache-2.0" \
+          --vendor "AxonOps" \
+          --maintainer "AxonOps Team <support@axonops.com>" \
+          --architecture amd64 \
+          --category "database" \
+          --depends "libc6 (>= 2.17)" \
+          --after-install <(echo "echo 'Cassandra Analyzer installed successfully!'") \
+          -C deb \
+          usr
+        
+        mv *.deb cassandra-analyzer_${VERSION}_amd64.deb
+    
+    - name: Build RPM package
+      run: |
+        VERSION="${{ github.ref_name }}"
+        VERSION="${VERSION#v}"  # Remove 'v' prefix
+        fpm -s dir -t rpm \
+          -n cassandra-analyzer \
+          -v "${VERSION}" \
+          --description "Comprehensive Cassandra cluster analysis tool powered by AxonOps" \
+          --url "https://github.com/axonops/cassandra-analyzer" \
+          --license "Apache-2.0" \
+          --vendor "AxonOps" \
+          --architecture x86_64 \
+          --category "Applications/Databases" \
+          --depends "glibc >= 2.17" \
+          --after-install <(echo "echo 'Cassandra Analyzer installed successfully!'") \
+          -C rpm \
+          usr
+        
+        mv *.rpm cassandra-analyzer-${VERSION}-1.x86_64.rpm
+    
+    - name: Upload packages to release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        VERSION="${{ github.ref_name }}"
+        VERSION="${VERSION#v}"  # Remove 'v' prefix
+        gh release upload ${{ github.ref_name }} \
+          cassandra-analyzer_${VERSION}_amd64.deb \
+          cassandra-analyzer-${VERSION}-1.x86_64.rpm \
+          --clobber
+
   # TODO: Enable Docker build when ready
   # build-docker:
   #   needs: build-and-publish
