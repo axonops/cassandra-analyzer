@@ -69,7 +69,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11'
+        python-version: '3.12'
     
     - name: Install Bandit
       run: |
@@ -144,7 +144,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11'
+        python-version: '3.12'
     
     - name: Install dependencies
       run: |
@@ -155,9 +155,22 @@ jobs:
     
     - name: Build executable
       run: |
+        # For macOS cross-compilation, we need to create the spec file with the target arch
         if [[ "${{ matrix.pyinstaller_arch }}" != "" ]]; then
-          pyinstaller cassandra-analyzer.spec --clean --target-arch ${{ matrix.pyinstaller_arch }}
+          # Remove existing spec file and create new one with target architecture
+          rm -f cassandra-analyzer.spec
+          pyinstaller cassandra_analyzer_main.py \
+            --name cassandra-analyzer \
+            --onefile \
+            --console \
+            --target-arch ${{ matrix.pyinstaller_arch }} \
+            --add-data "cassandra_analyzer/reports/templates:cassandra_analyzer/reports/templates" \
+            --hidden-import yaml \
+            --hidden-import pyyaml \
+            --hidden-import pandas \
+            --clean
         else
+          # Use existing spec file for non-macOS builds
           pyinstaller cassandra-analyzer.spec --clean
         fi
     
