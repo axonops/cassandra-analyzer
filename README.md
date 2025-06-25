@@ -14,8 +14,8 @@
   <a href="https://github.com/axonops/cassandra-analyzer/discussions">
     <img src="https://img.shields.io/github/discussions/axonops/cassandra-analyzer" alt="Discussions">
   </a>
-  <a href="https://pypi.org/project/cassandra-axonops-analyzer/">
-    <img src="https://img.shields.io/pypi/v/cassandra-axonops-analyzer" alt="PyPI">
+  <a href="#installation">
+    <img src="https://img.shields.io/badge/PyPI-Coming%20Soon-orange" alt="PyPI">
   </a>
   <a href="https://github.com/axonops/cassandra-analyzer/actions">
     <img src="https://github.com/axonops/cassandra-analyzer/workflows/CI/badge.svg" alt="CI Status">
@@ -55,13 +55,16 @@ Cassandra Analyzer is a powerful diagnostic tool that performs comprehensive ana
 
 ## 🔧 Installation
 
-### From PyPI (Recommended)
+### From PyPI (Coming Soon)
+
+The package will be available on PyPI soon. In the meantime, please install from source or use the standalone executables.
 
 ```bash
-pip install cassandra-axonops-analyzer
+# Coming soon:
+# pip install cassandra-axonops-analyzer
 ```
 
-### From Source
+### From Source (Currently Recommended)
 
 ```bash
 git clone https://github.com/axonops/cassandra-analyzer.git
@@ -70,13 +73,13 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Using Standalone Executable
+### Using Standalone Executable (Coming Soon)
 
-Download pre-built executables from the [releases page](https://github.com/axonops/cassandra-analyzer/releases):
+Pre-built executables will be available from the [releases page](https://github.com/axonops/cassandra-analyzer/releases) soon:
 
-- **Linux**: `cassandra-analyzer-linux-amd64`
-- **macOS**: `cassandra-analyzer-macos-amd64`
-- **Windows**: `cassandra-analyzer-windows-amd64.exe`
+- **Linux**: `cassandra-analyzer-linux-amd64` (coming soon)
+- **macOS**: `cassandra-analyzer-macos-amd64` (coming soon)
+- **Windows**: `cassandra-analyzer-windows-amd64.exe` (coming soon)
 
 ## 🚀 Quick Start
 
