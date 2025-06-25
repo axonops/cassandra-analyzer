@@ -143,10 +143,16 @@ jobs:
             artifact_name: cassandra-analyzer
             asset_name: cassandra-analyzer-linux-amd64
             
-          # macOS build
-          - os: macos-15  # Apple Silicon (latest)
+          # macOS builds
+          - os: macos-15
             artifact_name: cassandra-analyzer
             asset_name: cassandra-analyzer-macos-arm64
+            pyinstaller_arch: arm64  # Apple Silicon
+            
+          - os: macos-15
+            artifact_name: cassandra-analyzer
+            asset_name: cassandra-analyzer-macos-amd64
+            pyinstaller_arch: x86_64  # Intel
             
           # Windows build
           - os: windows-2022
@@ -172,7 +178,11 @@ jobs:
     
     - name: Build executable
       run: |
-        pyinstaller cassandra-analyzer.spec --clean
+        if [[ "${{ matrix.pyinstaller_arch }}" != "" ]]; then
+          pyinstaller cassandra-analyzer.spec --clean --target-arch ${{ matrix.pyinstaller_arch }}
+        else
+          pyinstaller cassandra-analyzer.spec --clean
+        fi
     
     - name: Test executable (non-Windows)
       if: matrix.os != 'windows-2022'

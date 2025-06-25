@@ -114,7 +114,8 @@ Download pre-built executables from the [releases page](https://github.com/axono
 | Platform | File | Size | Notes |
 |----------|------|------|-------|
 | **Linux** | `cassandra-analyzer-linux-amd64` | ~53MB | Works on most Linux distributions |
-| **macOS** | `cassandra-analyzer-macos-arm64` | ~53MB | For Apple Silicon (M1/M2/M3) Macs |
+| **macOS Intel** | `cassandra-analyzer-macos-amd64` | ~53MB | For Intel-based Macs |
+| **macOS Apple Silicon** | `cassandra-analyzer-macos-arm64` | ~53MB | For M1/M2/M3 Macs |
 | **Windows** | `cassandra-analyzer-windows-amd64.exe` | ~53MB | Windows 10/11 64-bit |
 
 ```bash
