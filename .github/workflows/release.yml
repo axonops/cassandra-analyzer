@@ -29,8 +29,39 @@ jobs:
           echo "Pre-release: $TAG"
         fi
 
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+    
+    - name: Run linting
+      run: |
+        make lint
+    
+    - name: Run tests
+      run: |
+        make test
+    
+    - name: Run type checking
+      run: |
+        make type-check
+
   build-and-publish:
-    needs: determine-release-type
+    needs: [determine-release-type, test]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -82,7 +113,7 @@ jobs:
           ```
 
   build-executables:
-    needs: [build-and-publish, determine-release-type]
+    needs: [build-and-publish, determine-release-type, test]
     strategy:
       matrix:
         include:
