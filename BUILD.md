@@ -251,7 +251,7 @@ The project uses GitHub Actions to automatically build releases when tags are pu
    - Build Python packages
    - Build executables for all platforms:
      - Linux (amd64)
-     - macOS (Intel and Apple Silicon)
+     - macOS (Apple Silicon arm64)
      - Windows (amd64)
    - Build DEB and RPM packages
    - Create a GitHub release with all artifacts
