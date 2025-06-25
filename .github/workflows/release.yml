@@ -352,7 +352,8 @@ jobs:
           -C deb \
           usr
         
-        mv *.deb cassandra-analyzer_${VERSION}_amd64.deb
+        # fpm already creates the file with the correct name
+        ls -la *.deb
     
     - name: Build RPM package
       run: |
@@ -372,7 +373,8 @@ jobs:
           -C rpm \
           usr
         
-        mv *.rpm cassandra-analyzer-${VERSION}-1.x86_64.rpm
+        # fpm already creates the file with the correct name
+        ls -la *.rpm
     
     - name: Upload packages to release
       env:
