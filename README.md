@@ -1,10 +1,6 @@
 # Cassandra Analyzer
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/axonops/cassandra-analyzer/main/docs/images/logo.png" alt="Cassandra Analyzer Logo" width="200">
-</p>
-
-<p align="center">
   <strong>Comprehensive Cassandra Cluster Analysis Tool Powered by AxonOps</strong>
 </p>
 
