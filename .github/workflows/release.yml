@@ -178,27 +178,30 @@ jobs:
         pip install requests pyyaml click pydantic jinja2 aiohttp structlog rich
         pip install pyinstaller
     
-    - name: Build executable (native)
-      if: matrix.pyinstaller_arch != 'x86_64'
+    - name: Build executable (Linux)
+      if: matrix.os == 'ubuntu-22.04'
       run: |
-        # For macOS cross-compilation, we need to create the spec file with the target arch
-        if [[ "${{ matrix.pyinstaller_arch }}" != "" ]]; then
-          # Remove existing spec file and create new one with target architecture
-          rm -f cassandra-analyzer.spec
-          pyinstaller cassandra_analyzer_main.py \
-            --name cassandra-analyzer \
-            --onefile \
-            --console \
-            --target-arch ${{ matrix.pyinstaller_arch }} \
-            --add-data "cassandra_analyzer/reports/templates:cassandra_analyzer/reports/templates" \
-            --hidden-import yaml \
-            --hidden-import pyyaml \
-            --hidden-import pandas \
-            --clean
-        else
-          # Use existing spec file for non-macOS builds
-          pyinstaller cassandra-analyzer.spec --clean
-        fi
+        pyinstaller cassandra-analyzer.spec --clean
+        
+    - name: Build executable (Windows)
+      if: matrix.os == 'windows-2022'
+      run: |
+        pyinstaller cassandra-analyzer.spec --clean
+        
+    - name: Build executable (macOS ARM)
+      if: matrix.os == 'macos-15' && matrix.pyinstaller_arch == 'arm64'
+      run: |
+        rm -f cassandra-analyzer.spec
+        pyinstaller cassandra_analyzer_main.py \
+          --name cassandra-analyzer \
+          --onefile \
+          --console \
+          --target-arch arm64 \
+          --add-data "cassandra_analyzer/reports/templates:cassandra_analyzer/reports/templates" \
+          --hidden-import yaml \
+          --hidden-import pyyaml \
+          --hidden-import pandas \
+          --clean
         
     - name: Build executable (Intel cross-compile)
       if: matrix.pyinstaller_arch == 'x86_64'
@@ -217,7 +220,7 @@ jobs:
           --hidden-import pandas \
           --clean
     
-    - name: Test executable (non-Windows)
+    - name: Test executable (Linux/macOS)
       if: matrix.os != 'windows-2022'
       run: |
         ./dist/${{ matrix.artifact_name }} --help
