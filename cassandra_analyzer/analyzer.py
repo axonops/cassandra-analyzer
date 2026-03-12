@@ -2,7 +2,7 @@
 Main analyzer orchestrator
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, Any, List
 import structlog
@@ -144,7 +144,7 @@ class CassandraAnalyzer:
                 "organization": self.org,
                 "cluster_type": self.cluster_type,
                 "cluster_name": self.cluster,
-                "analysis_time": datetime.utcnow().isoformat(),
+                "analysis_time": datetime.now(UTC).isoformat(),
                 "time_range": {
                     "start": self.start_time.isoformat(),
                     "end": self.end_time.isoformat(),

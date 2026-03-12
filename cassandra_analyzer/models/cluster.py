@@ -3,7 +3,7 @@ Cluster state models
 """
 
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 from pydantic import BaseModel, Field
 
 
@@ -252,7 +252,7 @@ class ClusterState(BaseModel):
     log_events: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     
     # Collection metadata
-    collection_time: datetime = Field(default_factory=datetime.utcnow)
+    collection_time: datetime = Field(default_factory=lambda: datetime.now(UTC))
     collection_duration_seconds: Optional[float] = None
     
     def get_datacenters(self) -> List[str]:

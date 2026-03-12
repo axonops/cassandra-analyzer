@@ -4,7 +4,7 @@ AxonOps API client implementation
 
 import requests
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 import structlog
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
@@ -148,7 +148,7 @@ class AxonOpsClient:
     def query(self, query: str, time: Optional[datetime] = None) -> Dict[str, Any]:
         """Execute Prometheus query"""
         if time is None:
-            time = datetime.utcnow()
+            time = datetime.now(UTC)
         
         # AxonOps requires both start and end parameters even for instant queries
         params = {

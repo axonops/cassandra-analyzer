@@ -2,7 +2,7 @@
 Main cluster data collector
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Dict, List, Any, Optional
 import structlog
 
@@ -29,7 +29,7 @@ class ClusterDataCollector:
         metrics_resolution: str = "60s"
     ) -> ClusterState:
         """Collect all cluster data"""
-        start_collection = datetime.utcnow()
+        start_collection = datetime.now(UTC)
         
         cluster_state = ClusterState(
             name=self.cluster,
@@ -63,7 +63,7 @@ class ClusterDataCollector:
         
         # Set collection metadata
         cluster_state.collection_duration_seconds = (
-            datetime.utcnow() - start_collection
+            datetime.now(UTC) - start_collection
         ).total_seconds()
         
         logger.info(

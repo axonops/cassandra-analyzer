@@ -17,9 +17,9 @@ class TestCassandraAnalyzer:
     @pytest.fixture
     def analyzer_params(self):
         """Common parameters for creating analyzer"""
-        from datetime import datetime, timedelta
+        from datetime import UTC, datetime, timedelta
 
-        end_time = datetime.utcnow()
+        end_time = datetime.now(UTC)
         start_time = end_time - timedelta(hours=24)
 
         return {
@@ -33,13 +33,13 @@ class TestCassandraAnalyzer:
 
     def test_analyzer_initialization(self, mock_config):
         """Test that analyzer initializes correctly with config"""
-        from datetime import datetime, timedelta
+        from datetime import UTC, datetime, timedelta
 
         with patch("cassandra_analyzer.analyzer.AxonOpsClient") as mock_client_class:
             mock_client = Mock()
             mock_client_class.return_value = mock_client
 
-            end_time = datetime.utcnow()
+            end_time = datetime.now(UTC)
             start_time = end_time - timedelta(hours=24)
 
             analyzer = CassandraAnalyzer(
