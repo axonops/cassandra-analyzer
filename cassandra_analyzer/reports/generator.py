@@ -3,7 +3,7 @@ Report generator for analysis results
 """
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -25,7 +25,7 @@ class ReportGenerator:
     
     def generate(self, report_data: Dict[str, Any]) -> Path:
         """Generate the analysis report"""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         cluster_name = report_data["cluster_info"]["cluster_name"]
         
         # Generate markdown report
@@ -46,7 +46,7 @@ class ReportGenerator:
             cluster_info=report_data["cluster_info"],
             cluster_state=report_data["cluster_state"],
             analysis_results=report_data["analysis_results"],
-            generation_time=datetime.utcnow().isoformat()
+            generation_time=datetime.now(UTC).isoformat()
         )
         
         with open(output_path, 'w', encoding='utf-8') as f:

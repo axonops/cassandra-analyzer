@@ -3,7 +3,7 @@ Enhanced report generator for analysis results
 """
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -49,7 +49,7 @@ class EnhancedReportGenerator:
         Returns:
             Path to the generated markdown report
         """
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         cluster_name = report_data["cluster_info"]["cluster_name"]
         
         # Generate enhanced markdown report
@@ -116,7 +116,7 @@ class EnhancedReportGenerator:
             "cluster_info": report_data["cluster_info"],
             "cluster_state": report_data["cluster_state"],
             "analysis_results": aggregated_results,
-            "generation_time": datetime.utcnow().isoformat(),
+            "generation_time": datetime.now(UTC).isoformat(),
             "recommendations_by_priority": recommendations_by_priority,
             "stats": stats,
             "sections": self._prepare_sections(aggregated_results),

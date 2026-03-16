@@ -2,12 +2,13 @@
 Command-line interface for Cassandra AxonOps Analyzer
 """
 
-import click
-import yaml
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, UTC, timedelta
 from pathlib import Path
+
+import click
 import structlog
+import yaml
 
 from .analyzer import CassandraAnalyzer
 from .client import AxonOpsClient
@@ -55,53 +56,53 @@ def main(config, output_dir, verbose, pdf):
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-    
+
     # Load configuration
     click.echo(f"Loading configuration from: {config}")
     with open(config, 'r') as f:
         config_data = yaml.safe_load(f)
-    
+
     # Check for environment variable for token if not in config
     import os
     if not config_data.get('axonops', {}).get('token'):
         env_token = os.getenv('AXONOPS_API_TOKEN')
         if env_token:
             config_data.setdefault('axonops', {})['token'] = env_token
-    
+
     # Validate required configuration
     if 'cluster' not in config_data:
         raise click.ClickException("'cluster' section is required in config file")
-    
+
     cluster_config = config_data['cluster']
     if 'org' not in cluster_config:
         raise click.ClickException("'org' is required in cluster configuration")
     if 'cluster' not in cluster_config:
         raise click.ClickException("'cluster' name is required in cluster configuration")
-    
+
     # Parse config and get analysis hours
     analyzer_config = Config(**config_data)
     hours = analyzer_config.analysis.hours
-    
+
     # Calculate time range based on hours in config
-    end_dt = datetime.utcnow()
+    end_dt = datetime.now(UTC)
     start_dt = end_dt - timedelta(hours=hours)
-    
+
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Validate required AxonOps configuration
     if not analyzer_config.axonops.api_url:
         raise click.ClickException("AxonOps API URL is required in config file")
     if not analyzer_config.axonops.token:
         raise click.ClickException("AxonOps API token is required. Set it in config file or AXONOPS_API_TOKEN env var")
-    
+
     # Initialize analyzer
     client = AxonOpsClient(
         api_url=analyzer_config.axonops.api_url,
         token=analyzer_config.axonops.token
     )
-    
+
     analyzer = CassandraAnalyzer(
         client=client,
         config=analyzer_config,
@@ -112,13 +113,13 @@ def main(config, output_dir, verbose, pdf):
         end_time=end_dt,
         output_dir=output_path
     )
-    
+
     # Run analysis
     click.echo(f"Starting analysis for cluster {analyzer_config.cluster.cluster} in organization {analyzer_config.cluster.org}")
     click.echo(f"Time range: {start_dt} to {end_dt} ({hours} hours)")
     click.echo(f"Cluster type: {analyzer_config.cluster.cluster_type}")
     click.echo(f"API URL: {analyzer_config.axonops.api_url}")
-    
+
     try:
         report_path = analyzer.analyze(generate_pdf=pdf)
         click.echo(f"Analysis complete! Report saved to: {report_path}")
