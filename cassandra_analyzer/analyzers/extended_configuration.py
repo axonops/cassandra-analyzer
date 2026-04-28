@@ -392,23 +392,35 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     seed_hostnames = [s.strip() for s in seeds_str.split(',')]
                     all_seeds.update(seed_hostnames)
                     
-                    # Check for non-existent seed hostnames
-                    # Collect all node hostnames in the cluster
-                    node_hostnames = set()
+                    # Check for non-existent seed hostnames.
+                    # Seeds map to a node's gossip address, which may be specified
+                    # as either a hostname or an IP, so match against host_Hostname
+                    # plus listen/broadcast addresses (NOT rpc_address — seeds are
+                    # gossip, not client traffic).
+                    node_identifiers = set()
+                    node_hostname_bases = set()
                     for cluster_node in cluster_state.nodes.values():
-                        node_hostname = cluster_node.Details.get("host_Hostname", "")
-                        if node_hostname:
-                            node_hostnames.add(node_hostname)
-                    
+                        for key in ("host_Hostname", "comp_listen_address",
+                                    "comp_broadcast_address"):
+                            value = cluster_node.Details.get(key, "")
+                            if value:
+                                node_identifiers.add(value)
+                                if '.' in value and not value.replace('.', '').isdigit():
+                                    node_hostname_bases.add(value.split('.')[0])
+
                     # Check which seeds don't exist in the cluster
                     non_existent_seeds = []
                     for seed in seed_hostnames:
                         # Remove port if present
                         seed_host = seed.split(':')[0] if ':' in seed else seed
-                        
-                        # Check if this seed hostname exists in the cluster
-                        if seed_host not in node_hostnames:
-                            non_existent_seeds.append(seed)
+
+                        if seed_host in node_identifiers:
+                            continue
+                        if '.' in seed_host and not seed_host.replace('.', '').isdigit():
+                            seed_base = seed_host.split('.')[0]
+                            if seed_base in node_hostname_bases or seed_base in node_identifiers:
+                                continue
+                        non_existent_seeds.append(seed)
                     
                     # Create recommendation for non-existent seeds
                     if non_existent_seeds:
@@ -428,29 +440,43 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     
                     break  # All nodes should have the same seed list
         
-        # Now count seeds per DC by matching hostnames
+        # Now count seeds per DC. A node is a seed if any seed entry matches
+        # its hostname or its gossip (listen/broadcast) address. Strip ports
+        # from seeds before comparing.
+        seed_hosts = set()
+        for seed in all_seeds:
+            seed_host = seed.split(':')[0] if ':' in seed else seed
+            seed_hosts.add(seed_host)
+
         for node in cluster_state.nodes.values():
             dc = node.DC
             if dc not in seeds_per_dc:
                 seeds_per_dc[dc] = 0
-            
-            # Check if this node is a seed by hostname
-            node_hostname = node.Details.get("host_Hostname", "")
-            if node_hostname:
-                # Check for exact match first
-                if node_hostname in all_seeds:
-                    seeds_per_dc[dc] += 1
-                else:
-                    # Check if any seed matches this node's hostname pattern
-                    # This handles cases where seed domains might be misconfigured
-                    for seed in all_seeds:
-                        # Extract the base hostname part (before first dot)
-                        node_base = node_hostname.split('.')[0] if '.' in node_hostname else node_hostname
-                        seed_base = seed.split('.')[0] if '.' in seed else seed
-                        # If the base hostnames match, count it as a seed
-                        if node_base == seed_base:
-                            seeds_per_dc[dc] += 1
+
+            node_addresses = set()
+            for key in ("host_Hostname", "comp_listen_address", "comp_broadcast_address"):
+                value = node.Details.get(key, "")
+                if value:
+                    node_addresses.add(value)
+
+            is_seed = False
+            if node_addresses & seed_hosts:
+                is_seed = True
+            else:
+                # Fall back to base-hostname match for misconfigured seed domains.
+                # Only meaningful for true hostnames, not IP addresses.
+                node_bases = {
+                    addr.split('.')[0] for addr in node_addresses
+                    if '.' in addr and not addr.replace('.', '').isdigit()
+                }
+                for seed_host in seed_hosts:
+                    if '.' in seed_host and not seed_host.replace('.', '').isdigit():
+                        if seed_host.split('.')[0] in node_bases:
+                            is_seed = True
                             break
+
+            if is_seed:
+                seeds_per_dc[dc] += 1
         
         # Now check if each DC has adequate seeds
         for dc, nodes in datacenter_nodes.items():
