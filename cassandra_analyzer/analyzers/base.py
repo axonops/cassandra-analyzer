@@ -211,6 +211,8 @@ class BaseAnalyzer(ABC):
         **context
     ) -> Recommendation:
         """Helper method to create recommendations"""
+        if current_value is not None and "current_value" not in context:
+            context["current_value"] = current_value
         return Recommendation(
             title=title,
             description=description,
