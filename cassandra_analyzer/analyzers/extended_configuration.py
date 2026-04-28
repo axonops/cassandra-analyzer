@@ -2,6 +2,7 @@
 Extended configuration analyzers implementing additional configuration checks
 """
 
+import re
 from typing import Dict, Any, List, Optional
 import structlog
 from ..models import ClusterState, Recommendation, Severity
@@ -334,10 +335,31 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
         
         return recommendations
     
+    @staticmethod
+    def _is_k8s_seed_provider(seed_provider: str) -> bool:
+        """Detect K8ssandra-style seed providers that discover seeds dynamically
+        from a Kubernetes service rather than a static cassandra.yaml list.
+
+        Known classes include io.k8ssandra.K8SeedProvider,
+        org.apache.cassandra.locator.K8SeedProvider, and
+        com.instaclustr.cassandra.k8s.K8sSeedProvider. The shared marker is
+        "K8" immediately preceding "SeedProvider" in the class name.
+        """
+        if not seed_provider:
+            return False
+        return bool(re.search(r'K8[Ss]?SeedProvider', seed_provider))
+
     def _analyze_seeds_configuration(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze seed node configuration"""
         recommendations = []
-        
+
+        # K8s seed providers resolve seeds dynamically from a headless service,
+        # so the static "seeds=..." list (if any) is a service DNS name, not a
+        # node hostname. Static existence and per-DC count checks don't apply.
+        for node in cluster_state.nodes.values():
+            if self._is_k8s_seed_provider(node.Details.get("comp_seed_provider", "")):
+                return recommendations
+
         # Extract seed configurations from nodes
         seed_lists = {}
         datacenter_nodes = {}
@@ -384,7 +406,6 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
             if seed_provider:
                 # Parse seed provider string to extract seed hostnames
                 # Format: "org.apache.cassandra.locator.SimpleSeedProvider{seeds=host1,host2,host3}"
-                import re
                 seeds_match = re.search(r'seeds=([^}]+)', seed_provider)
                 if seeds_match:
                     seeds_str = seeds_match.group(1)
