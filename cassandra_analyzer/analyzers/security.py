@@ -21,8 +21,8 @@ class SecurityAnalyzer(BaseAnalyzer):
         recommendations.extend(auth_recommendations)
         details.update(auth_details)
         
-        # Analyze encryption
-        recommendations.extend(self._analyze_encryption(cluster_state))
+        # Analyze encryption - disabled since AxonOps does not expose this information
+        # recommendations.extend(self._analyze_encryption(cluster_state))
         
         # Create summary
         summary = {

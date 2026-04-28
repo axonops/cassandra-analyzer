@@ -815,8 +815,11 @@ _Security settings are configured in **cassandra.yaml** unless otherwise noted._
 |---------------|--------|---------------|------------|
 {% set auth_enabled = section.data.summary.get('auth_enabled', False) %}{% set authz_enabled = section.data.summary.get('authz_enabled', False) %}{% set authenticator = section.data.summary.get('authenticator', 'Unknown') %}{% set authorizer = section.data.summary.get('authorizer', 'Unknown') %}| Authentication | {{ '✅ Enabled' if auth_enabled else '❌ Disabled' }} | {{ authenticator }} | {{ '✅ Low' if auth_enabled else '🔴 High' }} |
 | Authorization | {{ '✅ Enabled' if authz_enabled else '❌ Disabled' }} | {{ authorizer }} | {{ '✅ Low' if authz_enabled else '🔴 High' }} |
+{# Encryption options disabled since AxonOps does not return this information #}
+{#
 | Encryption in Transit | ❓ Unknown | Not checked | 🟡 Medium |
 | Encryption at Rest | ❓ Unknown | Not checked | 🟡 Medium |
+#}
 
 ### Security Issues Detail
 
