@@ -70,34 +70,42 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
         recommendations = []
         
         for node in cluster_state.nodes.values():
-            # Check compaction throughput
-            throughput = node.Details.get("comp_compaction_throughput_mb_per_sec", 16)
+            # 5.0 renamed compaction_throughput_mb_per_sec → compaction_throughput
+            # (with units, e.g. ``64MiB/s``). Read either form via the helper.
+            throughput_mibps = self._get_rate_mibps(node, "compaction_throughput")
+            if throughput_mibps is None:
+                throughput_mibps = 16.0  # default if neither key surfaces
             concurrent_compactors = node.Details.get("comp_concurrent_compactors", 2)
-            
+
+            # Surface the canonical setting name and value form per cluster version.
+            is_5x = version_at_least(node_version(node), V5_0)
+            setting_name = "compaction_throughput" if is_5x else "compaction_throughput_mb_per_sec"
+            value_str = f"{throughput_mibps:.0f}MiB/s" if is_5x else f"{int(throughput_mibps)} MB/s"
+
             try:
-                throughput_val = int(throughput)
                 compactors_val = int(concurrent_compactors)
-                
+                throughput_val = throughput_mibps  # MiB/s
+
                 # Calculate throughput per compactor
                 if compactors_val > 0:
                     throughput_per_compactor = throughput_val / compactors_val
-                    
+
                     # When throughput is at default AND results in low per-compactor throughput,
                     # create a single combined recommendation
                     if throughput_val == 16 and throughput_per_compactor < 8:
                         recommendations.append(
                             self._create_recommendation(
-                                title="Conservative Compaction Throughput with High Concurrency (compaction_throughput_mb_per_sec, concurrent_compactors)",
-                                description=f"Node {self._get_node_identifier(node)} uses default 16 MB/s throughput with {compactors_val} compactors, resulting in only {throughput_per_compactor:.1f} MB/s per compactor",
+                                title=f"Conservative Compaction Throughput with High Concurrency ({setting_name}, concurrent_compactors)",
+                                description=f"Node {self._get_node_identifier(node)} uses default 16 MiB/s throughput with {compactors_val} compactors, resulting in only {throughput_per_compactor:.1f} MiB/s per compactor",
                                 severity=Severity.WARNING,
                                 category="configuration",
                                 impact="Default throughput spread across many compactors may cause compaction to lag behind writes",
-                                recommendation="Increase compaction_throughput_mb_per_sec to 64 MB/s or reduce concurrent_compactors in cassandra.yaml",
-                                current_value=f"compaction_throughput_mb_per_sec={throughput_val} MB/s, concurrent_compactors={compactors_val}",
+                                recommendation=f"Increase {setting_name} to 64 MiB/s or reduce concurrent_compactors in cassandra.yaml",
+                                current_value=f"{setting_name}={value_str}, concurrent_compactors={compactors_val}",
                                 node_id=node.host_id,
-                                compaction_throughput_mb_per_sec=throughput_val,
+                                compaction_throughput_mibps=throughput_val,
                                 concurrent_compactors=compactors_val,
-                                recommended_value="64 MB/s throughput or fewer compactors",
+                                recommended_value="64 MiB/s throughput or fewer compactors",
                                 config_location="cassandra.yaml"
                             )
                         )
@@ -105,17 +113,17 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     elif throughput_val != 16 and throughput_per_compactor < 8:
                         recommendations.append(
                             self._create_recommendation(
-                                title="Low Compaction Throughput Per Compactor (compaction_throughput_mb_per_sec, concurrent_compactors)",
-                                description=f"Node {self._get_node_identifier(node)} has {throughput_per_compactor:.1f} MB/s per compactor",
+                                title=f"Low Compaction Throughput Per Compactor ({setting_name}, concurrent_compactors)",
+                                description=f"Node {self._get_node_identifier(node)} has {throughput_per_compactor:.1f} MiB/s per compactor",
                                 severity=Severity.WARNING,
                                 category="configuration",
                                 impact="Compaction may lag behind writes causing read performance issues",
-                                recommendation="Increase compaction_throughput_mb_per_sec or reduce concurrent_compactors in cassandra.yaml",
-                                current_value=f"compaction_throughput_mb_per_sec={throughput_val} MB/s, concurrent_compactors={compactors_val}",
+                                recommendation=f"Increase {setting_name} or reduce concurrent_compactors in cassandra.yaml",
+                                current_value=f"{setting_name}={value_str}, concurrent_compactors={compactors_val}",
                                 node_id=node.host_id,
-                                compaction_throughput_mb_per_sec=throughput_val,
+                                compaction_throughput_mibps=throughput_val,
                                 concurrent_compactors=compactors_val,
-                                recommended_value="≥8 MB/s per compactor",
+                                recommended_value="≥8 MiB/s per compactor",
                                 config_location="cassandra.yaml"
                             )
                         )
@@ -123,59 +131,59 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     elif throughput_val == 16 and throughput_per_compactor >= 8:
                         recommendations.append(
                             self._create_recommendation(
-                                title="Conservative Compaction Throughput (compaction_throughput_mb_per_sec)",
-                                description=f"Node {self._get_node_identifier(node)} uses default 16 MB/s compaction throughput",
+                                title=f"Conservative Compaction Throughput ({setting_name})",
+                                description=f"Node {self._get_node_identifier(node)} uses default 16 MiB/s compaction throughput",
                                 severity=Severity.INFO,
                                 category="configuration",
                                 impact="May not utilize available I/O capacity for compaction",
-                                recommendation="Consider increasing compaction_throughput_mb_per_sec to 64 MB/s for modern hardware in cassandra.yaml",
-                                current_value="compaction_throughput_mb_per_sec=16 MB/s",
+                                recommendation=f"Consider increasing {setting_name} to 64 MiB/s for modern hardware in cassandra.yaml",
+                                current_value=f"{setting_name}={value_str}",
                                 node_id=node.host_id,
-                                compaction_throughput_mb_per_sec=throughput_val,
-                                recommended_value="64 MB/s",
+                                compaction_throughput_mibps=throughput_val,
+                                recommended_value="64 MiB/s",
                                 config_location="cassandra.yaml"
                             )
                         )
-                
+
                 # Check for unthrottled compaction
                 if throughput_val == 0:
                     recommendations.append(
                         self._create_recommendation(
-                            title="Unthrottled Compaction (compaction_throughput_mb_per_sec)",
+                            title=f"Unthrottled Compaction ({setting_name})",
                             description=f"Node {self._get_node_identifier(node)} has unlimited compaction throughput",
                             severity=Severity.WARNING,
                             category="configuration",
                             impact="May overwhelm I/O and affect read/write performance",
                             recommendation="Set reasonable compaction throughput limit in cassandra.yaml",
-                            current_value="compaction_throughput_mb_per_sec=0 MB/s (unlimited)",
+                            current_value=f"{setting_name}=0 (unlimited)",
                             node_id=node.host_id,
-                            compaction_throughput_mb_per_sec=throughput_val,
-                            recommended_value="64-128 MB/s",
+                            compaction_throughput_mibps=throughput_val,
+                            recommended_value="64-128 MiB/s",
                             config_location="cassandra.yaml"
                         )
                     )
-                
+
                 # Check for unusually high values
                 if throughput_val > 200:
                     recommendations.append(
                         self._create_recommendation(
-                            title="Very High Compaction Throughput (compaction_throughput_mb_per_sec)",
-                            description=f"Node {self._get_node_identifier(node)} has {throughput_val} MB/s compaction throughput",
+                            title=f"Very High Compaction Throughput ({setting_name})",
+                            description=f"Node {self._get_node_identifier(node)} has {throughput_val:.0f} MiB/s compaction throughput",
                             severity=Severity.WARNING,
                             category="configuration",
                             impact="May overwhelm I/O bandwidth",
                             recommendation="Verify this setting is appropriate for your hardware in cassandra.yaml",
-                            current_value=f"compaction_throughput_mb_per_sec={throughput_val} MB/s",
+                            current_value=f"{setting_name}={value_str}",
                             node_id=node.host_id,
-                            compaction_throughput_mb_per_sec=throughput_val,
+                            compaction_throughput_mibps=throughput_val,
                             config_location="cassandra.yaml"
                         )
                     )
-                
+
             except (ValueError, TypeError):
                 # Handle non-numeric values
                 pass
-        
+
         return recommendations
     
     def _analyze_disk_failure_policy(self, cluster_state: ClusterState) -> List[Recommendation]:
@@ -472,61 +480,71 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
         recommendations = []
         
         for node in cluster_state.nodes.values():
-            # Check streaming throughput
-            throughput = node.Details.get("comp_stream_throughput_outbound_megabits_per_sec", 200)
-            # streaming_socket_timeout_in_ms was renamed to streaming_socket_timeout
-            # (with duration syntax) in 5.0 — try the modern key first, fall back to legacy.
+            is_5x = version_at_least(node_version(node), V5_0)
+
+            # streaming_socket_timeout_in_ms (4.x) → streaming_socket_timeout (5.x duration).
             timeout_val = self._get_duration_ms(node, "streaming_socket_timeout")
             if timeout_val is None:
                 timeout_val = 86400000
-
-            # Pick the canonical setting name to surface in the recommendation
-            # so the user sees the form that matches their cluster's version.
-            is_5x = version_at_least(node_version(node), V5_0)
             timeout_setting_name = "streaming_socket_timeout" if is_5x else "streaming_socket_timeout_in_ms"
 
-            try:
-                throughput_val = int(throughput)
+            # 4.x: stream_throughput_outbound_megabits_per_sec (megabits/sec, default 200).
+            # 5.x: stream_throughput_outbound (data-rate string, default 24MiB/s).
+            # Read both and normalise to bytes-per-second so we can compare a single value.
+            throughput_bps = self._get_rate_bytes_per_sec(
+                node,
+                "stream_throughput_outbound",
+                legacy_suffix="megabits_per_sec",
+                legacy_unit="Mibps",
+            )
+            stream_setting_name = "stream_throughput_outbound" if is_5x else "stream_throughput_outbound_megabits_per_sec"
 
-                # Recommend keeping defaults unless there's a specific reason
-                if throughput_val != 200:
+            # The 4.x and 5.x defaults are nearly equivalent (200 Mibps ≈ 25 MB/s vs
+            # 24 MiB/s ≈ 25.2 MB/s). Use a small tolerance so a node sitting on the
+            # version-appropriate default isn't flagged.
+            if throughput_bps is not None:
+                default_bps = 24 * 1024 * 1024 if is_5x else (200 * 1024 * 1024 / 8)
+                if abs(throughput_bps - default_bps) / default_bps > 0.05:
+                    if is_5x:
+                        current_str = f"{throughput_bps / (1024 * 1024):.1f} MiB/s"
+                        recommended_str = "24MiB/s"
+                    else:
+                        current_str = f"{throughput_bps * 8 / (1024 * 1024):.0f} Mbps"
+                        recommended_str = "200 Mbps"
                     recommendations.append(
                         self._create_recommendation(
-                            title="Non-Default Streaming Throughput (stream_throughput_outbound_megabits_per_sec)",
-                            description=f"Node {self._get_node_identifier(node)} has {throughput_val} Mb/s streaming throughput",
+                            title=f"Non-Default Streaming Throughput ({stream_setting_name})",
+                            description=f"Node {self._get_node_identifier(node)} has {current_str} streaming throughput",
                             severity=Severity.INFO,
                             category="configuration",
                             impact="May affect repair and bootstrap performance",
-                            recommendation="Default 200 Mb/s is usually optimal unless network capacity differs in cassandra.yaml",
-                            current_value=f"stream_throughput_outbound_megabits_per_sec={throughput_val} Mb/s",
+                            recommendation=f"Default {recommended_str} is usually optimal unless network capacity differs in cassandra.yaml",
+                            current_value=f"{stream_setting_name}={current_str}",
                             node_id=node.host_id,
-                            stream_throughput_outbound_megabits_per_sec=throughput_val,
-                            recommended_value="200 Mb/s",
+                            stream_throughput_bytes_per_sec=throughput_bps,
+                            recommended_value=recommended_str,
                             config_location="cassandra.yaml"
                         )
                     )
 
-                # Check timeout (should be 24 hours = 86400000ms)
-                if timeout_val != 86400000:
-                    recommendations.append(
-                        self._create_recommendation(
-                            title=f"Non-Default Streaming Timeout ({timeout_setting_name})",
-                            description=f"Node {self._get_node_identifier(node)} has {timeout_val/1000/60/60:.1f} hour timeout",
-                            severity=Severity.INFO,
-                            category="configuration",
-                            impact="May affect long-running streaming operations",
-                            recommendation="Default 24 hour timeout is usually appropriate in cassandra.yaml",
-                            current_value=f"{timeout_setting_name}={timeout_val} ms ({timeout_val/1000/60/60:.1f} hours)",
-                            node_id=node.host_id,
-                            streaming_socket_timeout_in_ms=timeout_val,
-                            recommended_value="86400000 ms (24 hours)" if not is_5x else "24h",
-                            config_location="cassandra.yaml"
-                        )
+            # Check timeout (should be 24 hours = 86400000ms)
+            if timeout_val != 86400000:
+                recommendations.append(
+                    self._create_recommendation(
+                        title=f"Non-Default Streaming Timeout ({timeout_setting_name})",
+                        description=f"Node {self._get_node_identifier(node)} has {timeout_val/1000/60/60:.1f} hour timeout",
+                        severity=Severity.INFO,
+                        category="configuration",
+                        impact="May affect long-running streaming operations",
+                        recommendation="Default 24 hour timeout is usually appropriate in cassandra.yaml",
+                        current_value=f"{timeout_setting_name}={timeout_val} ms ({timeout_val/1000/60/60:.1f} hours)",
+                        node_id=node.host_id,
+                        streaming_socket_timeout_in_ms=timeout_val,
+                        recommended_value="86400000 ms (24 hours)" if not is_5x else "24h",
+                        config_location="cassandra.yaml"
                     )
+                )
 
-            except (ValueError, TypeError):
-                pass
-        
         return recommendations
     
     def _analyze_version_consistency(self, cluster_state: ClusterState) -> List[Recommendation]:

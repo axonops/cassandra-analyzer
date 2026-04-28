@@ -437,3 +437,200 @@ class TestJvmAwareness:
         recs = analyzer.analyze(cs).get("recommendations", [])
         # The "Cassandra 5.x Running on Java 11" rec should not appear when not on 5.x.
         assert [r for r in recs if isinstance(r, dict) and "Cassandra 5.x Running on Java" in r.get("title", "")] == []
+
+
+# ---------------------------------------------------------------------------
+# Renamed settings — size and rate value parsing across versions
+# ---------------------------------------------------------------------------
+
+
+class TestParsers:
+    """Direct tests of the size / rate parsers."""
+
+    def test_size_parser(self):
+        from cassandra_analyzer.analyzers.base import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes(32) == 32 * 1024 * 1024  # default unit MiB
+        assert _parse_size_to_bytes("32MiB") == 32 * 1024 * 1024
+        assert _parse_size_to_bytes("32MB") == 32 * 1024 * 1024  # treat MB == MiB
+        assert _parse_size_to_bytes("4GiB") == 4 * 1024 ** 3
+        assert _parse_size_to_bytes("garbage") is None
+        assert _parse_size_to_bytes(None) is None
+        # default_unit override
+        assert _parse_size_to_bytes(1024, default_unit="KiB") == 1024 * 1024
+
+    def test_rate_parser_default_mib_per_sec(self):
+        from cassandra_analyzer.analyzers.base import _parse_rate_to_bytes_per_sec
+
+        # Bare 64 with default MiB/s → 64 MiB/s in bytes/sec.
+        assert _parse_rate_to_bytes_per_sec(64) == 64 * 1024 * 1024
+        assert _parse_rate_to_bytes_per_sec("64MiB/s") == 64 * 1024 * 1024
+        # 200 megabits/sec → 25 MB/s
+        assert _parse_rate_to_bytes_per_sec(200, default_unit="Mibps") == 200 * 1024 * 1024 / 8
+        # 5.x default for stream throughput
+        assert _parse_rate_to_bytes_per_sec("24MiB/s") == 24 * 1024 * 1024
+
+
+class TestCompactionThroughputCompat:
+    @pytest.fixture
+    def analyzer(self, mock_config):
+        return ExtendedConfigurationAnalyzer(mock_config)
+
+    def test_4x_int_value_recognised(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="4.1.3")
+        for node in cs.nodes.values():
+            node.Details["comp_compaction_throughput_mb_per_sec"] = "16"
+            node.Details["comp_concurrent_compactors"] = "4"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        # 16 MiB/s with 4 compactors = 4 MiB/s per compactor → falls in the
+        # "Conservative … with High Concurrency" bucket.
+        match = _by_title(recs, "Conservative Compaction Throughput with High Concurrency")
+        assert len(match) == 1
+        assert "compaction_throughput_mb_per_sec" in match[0]["title"]
+
+    def test_5x_string_value_recognised(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="5.0.0")
+        for node in cs.nodes.values():
+            node.Details["comp_compaction_throughput"] = "16MiB/s"
+            node.Details["comp_concurrent_compactors"] = "4"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        match = _by_title(recs, "Conservative Compaction Throughput with High Concurrency")
+        assert len(match) == 1
+        # On 5.x the surfaced setting name uses the modern (unitless) key.
+        assert "compaction_throughput_mb_per_sec" not in match[0]["title"]
+        assert "compaction_throughput" in match[0]["title"]
+
+    def test_5x_64mibps_no_warnings(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="5.0.0")
+        for node in cs.nodes.values():
+            node.Details["comp_compaction_throughput"] = "64MiB/s"
+            node.Details["comp_concurrent_compactors"] = "4"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        # 64 MiB/s @ 4 compactors = 16 MiB/s per compactor — no compaction-throughput rec.
+        assert _by_title(recs, "Conservative Compaction Throughput") == []
+        assert _by_title(recs, "Low Compaction Throughput Per Compactor") == []
+
+
+class TestStreamThroughputCompat:
+    @pytest.fixture
+    def analyzer(self, mock_config):
+        return ExtendedConfigurationAnalyzer(mock_config)
+
+    def test_4x_default_200mbps_silent(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="4.1.3")
+        for node in cs.nodes.values():
+            node.Details["comp_stream_throughput_outbound_megabits_per_sec"] = "200"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        assert _by_title(recs, "Non-Default Streaming Throughput") == []
+
+    def test_4x_off_default_flagged(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="4.1.3")
+        for node in cs.nodes.values():
+            node.Details["comp_stream_throughput_outbound_megabits_per_sec"] = "1000"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        flag = _by_title(recs, "Non-Default Streaming Throughput")
+        assert len(flag) == 1
+        assert "stream_throughput_outbound_megabits_per_sec" in flag[0]["title"]
+
+    def test_5x_default_24mibps_silent(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="5.0.0")
+        for node in cs.nodes.values():
+            node.Details["comp_stream_throughput_outbound"] = "24MiB/s"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        assert _by_title(recs, "Non-Default Streaming Throughput") == []
+
+    def test_5x_off_default_flagged_with_modern_key_name(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="5.0.0")
+        for node in cs.nodes.values():
+            node.Details["comp_stream_throughput_outbound"] = "100MiB/s"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        flag = _by_title(recs, "Non-Default Streaming Throughput")
+        assert len(flag) == 1
+        # On 5.x the title uses the unitless key.
+        assert "_megabits_per_sec" not in flag[0]["title"]
+        assert "stream_throughput_outbound" in flag[0]["title"]
+
+
+class TestCommitlogSyncBatchWindowCompat:
+    @pytest.fixture
+    def analyzer(self, mock_config):
+        from cassandra_analyzer.analyzers.configuration import ConfigurationAnalyzer
+        return ConfigurationAnalyzer(mock_config)
+
+    def test_4x_in_ms_recognised(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="4.1.3")
+        for node in cs.nodes.values():
+            node.Details["comp_commitlog_sync"] = "batch"
+            node.Details["comp_commitlog_sync_batch_window_in_ms"] = "20"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        match = _by_title(recs, "High Commitlog Sync Window")
+        assert len(match) == 1
+        assert "commitlog_sync_batch_window_in_ms" in match[0]["title"]
+
+    def test_5x_duration_string_recognised(self, analyzer):
+        cs = create_cluster_state(num_nodes=1, version="5.0.0")
+        for node in cs.nodes.values():
+            node.Details["comp_commitlog_sync"] = "batch"
+            # 5.x form: bare key, duration string.
+            node.Details["comp_commitlog_sync_batch_window"] = "20ms"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        match = _by_title(recs, "High Commitlog Sync Window")
+        assert len(match) == 1
+        assert "commitlog_sync_batch_window_in_ms" not in match[0]["title"]
+        assert "commitlog_sync_batch_window" in match[0]["title"]
+
+
+class TestMixedVersionMismatchDetection:
+    """When a mixed-version cluster has equivalent values under different
+    key names, the mismatch detector should NOT flag them as different."""
+
+    @pytest.fixture
+    def analyzer(self, mock_config):
+        from cassandra_analyzer.analyzers.configuration import ConfigurationAnalyzer
+        return ConfigurationAnalyzer(mock_config)
+
+    def test_equivalent_compaction_throughput_not_flagged(self, analyzer):
+        cs = create_cluster_state(num_nodes=2, version="4.1.3")
+        nodes = list(cs.nodes.values())
+        nodes[0].Details["comp_compaction_throughput_mb_per_sec"] = "64"
+        nodes[1].Details["comp_releaseVersion"] = "5.0.0"
+        nodes[1].Details["comp_cassandra_version"] = "5.0.0"
+        nodes[1].Details["comp_compaction_throughput"] = "64MiB/s"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        # Should NOT flag a compaction_throughput mismatch — values are equivalent.
+        ct_mismatches = [
+            r for r in recs
+            if isinstance(r, dict) and r.get("title", "").startswith("Configuration Mismatch")
+            and "compaction_throughput" in r.get("title", "")
+        ]
+        assert ct_mismatches == []
+
+    def test_equivalent_size_not_flagged(self, analyzer):
+        cs = create_cluster_state(num_nodes=2, version="4.1.3")
+        nodes = list(cs.nodes.values())
+        nodes[0].Details["comp_commitlog_segment_size_in_mb"] = "32"
+        nodes[1].Details["comp_releaseVersion"] = "5.0.0"
+        nodes[1].Details["comp_cassandra_version"] = "5.0.0"
+        nodes[1].Details["comp_commitlog_segment_size"] = "32MiB"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        size_mismatches = [
+            r for r in recs
+            if isinstance(r, dict) and r.get("title", "").startswith("Configuration Mismatch")
+            and "commitlog_segment_size" in r.get("title", "")
+        ]
+        assert size_mismatches == []
+
+    def test_truly_different_values_still_flagged(self, analyzer):
+        cs = create_cluster_state(num_nodes=2, version="4.1.3")
+        nodes = list(cs.nodes.values())
+        nodes[0].Details["comp_commitlog_segment_size_in_mb"] = "32"
+        nodes[1].Details["comp_releaseVersion"] = "5.0.0"
+        nodes[1].Details["comp_cassandra_version"] = "5.0.0"
+        nodes[1].Details["comp_commitlog_segment_size"] = "64MiB"
+        recs = analyzer.analyze(cs).get("recommendations", [])
+        size_mismatches = [
+            r for r in recs
+            if isinstance(r, dict) and r.get("title", "").startswith("Configuration Mismatch")
+            and "commitlog_segment_size" in r.get("title", "")
+        ]
+        assert len(size_mismatches) == 1

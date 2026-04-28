@@ -579,93 +579,113 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             )
             return recommendations
         
-        # Extract configuration from node details
-        config_values = {}
-        nodes_with_configs = []
-        
-        # Important configuration keys to check
-        # Note: Network-related addresses and interfaces are excluded as they should be different per node
-        important_configs = [
-            "comp_concurrent_reads",
-            "comp_concurrent_writes", 
-            "comp_concurrent_compactors",
-            "comp_compaction_throughput_mb_per_sec",
-            "comp_commitlog_sync",
-            "comp_commitlog_sync_period_in_ms",
-            "comp_commitlog_sync_batch_window_in_ms",
-            "comp_endpoint_snitch",
-            "comp_gc_warn_threshold_in_ms",
-            "comp_authenticator",
-            "comp_authorizer",
-            # "comp_listen_address",  # Excluded - should be different per node
-            # "comp_broadcast_address",  # Excluded - should be different per node
-            # "comp_listen_interface",  # Excluded - should be different per node
-            # "comp_rpc_address",  # Excluded - should be different per node
-            # "comp_rpc_interface",  # Excluded - should be different per node
-            # "comp_broadcast_rpc_address",  # Excluded - should be different per node
-            "comp_cluster_name",
-            "comp_partitioner",
-            "comp_commitlog_segment_size_in_mb",
-            "comp_memtable_flush_writers",
-            "comp_memtable_allocation_type",
-            "comp_disk_failure_policy",
-            "comp_commit_failure_policy",
-            "comp_key_cache_size_in_mb",
-            "comp_row_cache_size_in_mb",
-            "comp_num_tokens",
-            "comp_hinted_handoff_enabled",
-            "comp_max_hint_window_in_ms",
-            "comp_request_timeout_in_ms",
-            "comp_read_request_timeout_in_ms",
-            "comp_write_request_timeout_in_ms",
-            "comp_streaming_socket_timeout_in_ms",
-            "comp_phi_convict_threshold"
+        # Settings to compare across nodes. Each entry is (logical_name, kind)
+        # where ``kind`` selects the unit-aware reader so we treat e.g.
+        # ``compaction_throughput_mb_per_sec=64`` (4.x) and
+        # ``compaction_throughput="64MiB/s"`` (5.x) as the same value.
+        # ``"opaque"`` means compare the raw string verbatim.
+        # Network-related addresses and interfaces are intentionally excluded
+        # because they're expected to differ per node.
+        logical_settings = [
+            ("concurrent_reads", "opaque"),
+            ("concurrent_writes", "opaque"),
+            ("concurrent_compactors", "opaque"),
+            ("compaction_throughput", "rate_mibps"),
+            ("commitlog_sync", "opaque"),
+            ("commitlog_sync_period", "duration_ms"),
+            ("commitlog_sync_batch_window", "duration_ms"),
+            ("endpoint_snitch", "opaque"),
+            ("gc_warn_threshold", "duration_ms"),
+            ("authenticator", "opaque"),
+            ("authorizer", "opaque"),
+            ("cluster_name", "opaque"),
+            ("partitioner", "opaque"),
+            ("commitlog_segment_size", "size_mib"),
+            ("memtable_flush_writers", "opaque"),
+            ("memtable_allocation_type", "opaque"),
+            ("memtable_heap_space", "size_mib"),
+            ("memtable_offheap_space", "size_mib"),
+            ("disk_failure_policy", "opaque"),
+            ("commit_failure_policy", "opaque"),
+            ("key_cache_size", "size_mib"),
+            ("row_cache_size", "size_mib"),
+            ("num_tokens", "opaque"),
+            ("hinted_handoff_enabled", "opaque"),
+            ("max_hint_window", "duration_ms"),
+            ("request_timeout", "duration_ms"),
+            ("read_request_timeout", "duration_ms"),
+            ("write_request_timeout", "duration_ms"),
+            ("streaming_socket_timeout", "duration_ms"),
+            ("phi_convict_threshold", "opaque"),
         ]
-        
+
+        def _read_logical(node, name: str, kind: str):
+            """Return ``(canonical_value, display)``. ``canonical_value`` is the
+            normalised value used for cross-node comparison; ``display`` is the
+            string to surface to the user."""
+            details = getattr(node, "Details", {}) or {}
+            if kind == "duration_ms":
+                v = self._get_duration_ms(node, name)
+                return (v, f"{v} ms" if v is not None else None)
+            if kind == "size_mib":
+                v_bytes = self._get_size_bytes(node, name, legacy_suffix="in_mb", legacy_unit="MiB")
+                if v_bytes is None:
+                    return (None, None)
+                return (v_bytes, f"{v_bytes / (1024 * 1024):.0f} MiB")
+            if kind == "rate_mibps":
+                v_bps = self._get_rate_bytes_per_sec(
+                    node, name, legacy_suffix="mb_per_sec", legacy_unit="MiB/s"
+                )
+                if v_bps is None:
+                    return (None, None)
+                return (v_bps, f"{v_bps / (1024 * 1024):.0f} MiB/s")
+            # Opaque: try the bare key, then the legacy ``_in_ms`` / ``_in_mb``
+            # forms in case future renames slip through. Compare strings directly.
+            for candidate in (name, f"{name}_in_ms", f"{name}_in_mb", f"{name}_mb_per_sec"):
+                key = f"comp_{candidate}"
+                if key in details and details[key] is not None:
+                    raw = details[key]
+                    return (raw, str(raw))
+            return (None, None)
+
+        # Build value map keyed by logical setting → canonical_value → list of (node, display)
+        config_values: Dict[str, Dict[Any, List[str]]] = {}
+        config_displays: Dict[str, Dict[Any, str]] = {}
         for node in cluster_state.nodes.values():
-            node_configs = {}
-            if not hasattr(node, 'Details') or not node.Details:
+            if not hasattr(node, "Details") or not node.Details:
                 continue
-            for config_key in important_configs:
-                if config_key in node.Details:
-                    node_configs[config_key] = node.Details[config_key]
-            
-            if node_configs:
-                nodes_with_configs.append((self._get_node_identifier(node), node_configs))
-                
-                for config_key, value in node_configs.items():
-                    if config_key not in config_values:
-                        config_values[config_key] = {}
-                    if value not in config_values[config_key]:
-                        config_values[config_key][value] = []
-                    config_values[config_key][value].append(self._get_node_identifier(node))
-        
+            node_label = self._get_node_identifier(node)
+            for name, kind in logical_settings:
+                canonical, display = _read_logical(node, name, kind)
+                if canonical is None:
+                    continue
+                config_values.setdefault(name, {}).setdefault(canonical, []).append(node_label)
+                config_displays.setdefault(name, {}).setdefault(canonical, display)
+
         # Check for mismatches
         difference_count = 0
         mismatches = []
-        for config_key, values in config_values.items():
+        for logical_name, values in config_values.items():
             if len(values) > 1:
-                # Remove comp_ prefix for user-facing display
-                display_key = config_key.replace('comp_', '')
+                value_list = [config_displays[logical_name][v] for v in values.keys()]
                 recommendations.append(
                     self._create_recommendation(
-                        title=f"Configuration Mismatch: {display_key}",
-                        description=f"Nodes have different values for {display_key}: {list(values.keys())}",
+                        title=f"Configuration Mismatch: {logical_name}",
+                        description=f"Nodes have different values for {logical_name}: {value_list}",
                         severity=Severity.WARNING,
                         category="configuration",
                         impact="Inconsistent cluster behavior and unpredictable performance",
                         recommendation="Align this configuration setting across all nodes in cassandra.yaml",
-                        config_key=display_key,
-                        values=list(values.keys()),
+                        config_key=logical_name,
+                        values=value_list,
                         affected_nodes=list(values.values()),
                         config_location="cassandra.yaml"
                     )
                 )
                 difference_count += 1
-                # Collect mismatches for the summary recommendation
                 mismatches.append({
-                    "setting": display_key,
-                    "values": values
+                    "setting": logical_name,
+                    "values": {config_displays[logical_name][v]: nodes for v, nodes in values.items()},
                 })
         
         if difference_count > 0:
@@ -716,11 +736,17 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             # Check commitlog sync
             commitlog_sync = node.Details.get("comp_commitlog_sync")
             if commitlog_sync == "batch":
-                sync_period = node.Details.get("comp_commitlog_sync_batch_window_in_ms", 0)
-                if sync_period > 10:
+                # commitlog_sync_batch_window_in_ms (4.x) → commitlog_sync_batch_window (5.x duration).
+                sync_period = self._get_duration_ms(node, "commitlog_sync_batch_window")
+                is_5x_node = version_at_least(
+                    node.Details.get("comp_releaseVersion") or node.Details.get("release_version"),
+                    V5_0,
+                )
+                setting_name = "commitlog_sync_batch_window" if is_5x_node else "commitlog_sync_batch_window_in_ms"
+                if sync_period is not None and sync_period > 10:
                     recommendations.append(
                         self._create_recommendation(
-                            title="High Commitlog Sync Window (commitlog_sync_batch_window_in_ms)",
+                            title=f"High Commitlog Sync Window ({setting_name})",
                             description=f"Commitlog sync window is {sync_period}ms on node {self._get_node_identifier(node)}",
                             severity=Severity.WARNING,
                             category="configuration",
