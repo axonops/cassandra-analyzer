@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 import structlog
 
+_pdf_import_error: Optional[ImportError] = None
 try:
     import markdown
     from weasyprint import HTML, CSS
