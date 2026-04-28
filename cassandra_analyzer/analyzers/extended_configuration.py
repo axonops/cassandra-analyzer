@@ -5,6 +5,7 @@ Extended configuration analyzers implementing additional configuration checks
 from typing import Dict, Any, List, Optional
 import structlog
 from ..models import ClusterState, Recommendation, Severity
+from ..utils import V4_0, V5_0, node_version, parse_version, version_at_least
 from .base import BaseAnalyzer
 
 logger = structlog.get_logger()
@@ -473,12 +474,20 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
         for node in cluster_state.nodes.values():
             # Check streaming throughput
             throughput = node.Details.get("comp_stream_throughput_outbound_megabits_per_sec", 200)
-            timeout = node.Details.get("comp_streaming_socket_timeout_in_ms", 86400000)
-            
+            # streaming_socket_timeout_in_ms was renamed to streaming_socket_timeout
+            # (with duration syntax) in 5.0 — try the modern key first, fall back to legacy.
+            timeout_val = self._get_duration_ms(node, "streaming_socket_timeout")
+            if timeout_val is None:
+                timeout_val = 86400000
+
+            # Pick the canonical setting name to surface in the recommendation
+            # so the user sees the form that matches their cluster's version.
+            is_5x = version_at_least(node_version(node), V5_0)
+            timeout_setting_name = "streaming_socket_timeout" if is_5x else "streaming_socket_timeout_in_ms"
+
             try:
                 throughput_val = int(throughput)
-                timeout_val = int(timeout)
-                
+
                 # Recommend keeping defaults unless there's a specific reason
                 if throughput_val != 200:
                     recommendations.append(
@@ -496,25 +505,25 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                             config_location="cassandra.yaml"
                         )
                     )
-                
+
                 # Check timeout (should be 24 hours = 86400000ms)
                 if timeout_val != 86400000:
                     recommendations.append(
                         self._create_recommendation(
-                            title="Non-Default Streaming Timeout (streaming_socket_timeout_in_ms)",
+                            title=f"Non-Default Streaming Timeout ({timeout_setting_name})",
                             description=f"Node {self._get_node_identifier(node)} has {timeout_val/1000/60/60:.1f} hour timeout",
                             severity=Severity.INFO,
                             category="configuration",
                             impact="May affect long-running streaming operations",
                             recommendation="Default 24 hour timeout is usually appropriate in cassandra.yaml",
-                            current_value=f"streaming_socket_timeout_in_ms={timeout_val} ms ({timeout_val/1000/60/60:.1f} hours)",
+                            current_value=f"{timeout_setting_name}={timeout_val} ms ({timeout_val/1000/60/60:.1f} hours)",
                             node_id=node.host_id,
                             streaming_socket_timeout_in_ms=timeout_val,
-                            recommended_value="86400000 ms (24 hours)",
+                            recommended_value="86400000 ms (24 hours)" if not is_5x else "24h",
                             config_location="cassandra.yaml"
                         )
                     )
-                
+
             except (ValueError, TypeError):
                 pass
         
@@ -523,14 +532,14 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
     def _analyze_version_consistency(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze Cassandra version consistency and support status"""
         recommendations = []
-        
+
         versions = {}
         for node in cluster_state.nodes.values():
             version = node.Details.get("comp_cassandra_version", "unknown")
             if version not in versions:
                 versions[version] = []
             versions[version].append(node.host_id)
-        
+
         # Check version consistency
         if len(versions) > 1:
             recommendations.append(
@@ -545,53 +554,72 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     config_location="cassandra.yaml"
                 )
             )
-        
-        # Check for unsupported versions
+
+        # Check for unsupported / outdated versions
         for version, nodes in versions.items():
-            if version != "unknown":
-                if self._is_version_unsupported(version):
-                    recommendations.append(
-                        self._create_recommendation(
-                            title=f"Unsupported Cassandra Version: {version}",
-                            description=f"Nodes running unsupported version {version}: {nodes}",
-                            severity=Severity.CRITICAL,
-                            category="configuration",
-                            impact="Security vulnerabilities and lack of support",
-                            recommendation="Upgrade to Cassandra 4.x or latest supported version",
-                            version=version,
-                            affected_nodes=nodes,
-                            config_location="cassandra.yaml"
-                        )
+            if version == "unknown":
+                continue
+            parsed = parse_version(version)
+            if parsed is None:
+                continue
+            if parsed < V4_0:
+                recommendations.append(
+                    self._create_recommendation(
+                        title=f"Unsupported Cassandra Version: {version}",
+                        description=f"Nodes running end-of-life version {version}: {nodes}",
+                        severity=Severity.CRITICAL,
+                        category="configuration",
+                        impact="No upstream patches; security vulnerabilities and lack of community support",
+                        recommendation="Upgrade to Cassandra 4.1.x or 5.x (latest supported release)",
+                        version=version,
+                        affected_nodes=nodes,
+                        config_location="cassandra.yaml"
                     )
-        
+                )
+            elif parsed < V5_0:
+                # 4.0 / 4.1 still supported but Cassandra 5.x brings UCS,
+                # SAI, vector search, trie memtables and other improvements.
+                recommendations.append(
+                    self._create_recommendation(
+                        title=f"Consider Upgrading to Cassandra 5.x: {version}",
+                        description=f"Nodes running Cassandra {version}: {nodes}",
+                        severity=Severity.INFO,
+                        category="configuration",
+                        impact="Missing 5.x features (Unified Compaction Strategy, Storage-Attached Indexes, vector search, trie memtables) and ongoing 5.x bug fixes",
+                        recommendation="Plan an upgrade to Cassandra 5.x once your environment supports it",
+                        version=version,
+                        affected_nodes=nodes,
+                        config_location="cassandra.yaml"
+                    )
+                )
+
         return recommendations
-    
+
     def _supports_offheap_objects(self, version: str) -> bool:
-        """Check if Cassandra version supports offheap_objects"""
-        # Simplified version check - offheap_objects available in 2.1+
-        try:
-            if version and version != "unknown":
-                major_version = float(version.split('.')[0] + '.' + version.split('.')[1])
-                return major_version >= 2.1
-        except (ValueError, IndexError):
-            pass
-        return True  # Default to True if version can't be parsed
+        """Check if Cassandra version supports offheap_objects (2.1+)."""
+        parsed = parse_version(version)
+        if parsed is None:
+            # Default to True if version can't be parsed — preserves prior behaviour.
+            return True
+        return parsed >= (2, 1, 0)
     
-    def _is_version_unsupported(self, version: str) -> bool:
-        """Check if Cassandra version is unsupported"""
-        # Simplified check - versions below 3.0 are generally unsupported
-        try:
-            if version and version != "unknown":
-                major_version = float(version.split('.')[0] + '.' + version.split('.')[1])
-                return major_version < 3.0
-        except (ValueError, IndexError):
-            pass
-        return False  # Default to False if version can't be parsed
-    
+    def _cluster_has_materialized_views(self, cluster_state: ClusterState) -> bool:
+        """Return True if any non-system keyspace defines a materialized view."""
+        for ks_name, keyspace in cluster_state.keyspaces.items():
+            if ks_name in {"system", "system_auth", "system_distributed", "system_schema", "system_traces"}:
+                continue
+            for table in keyspace.tables_dict.values():
+                cql = getattr(table, "CQL", "") or ""
+                if "create materialized view" in cql.lower():
+                    return True
+        return False
+
     def _analyze_thread_pool_settings(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze thread pool settings (concurrent_reads/writes) based on CPU count"""
         recommendations = []
-        
+
+        has_mvs = self._cluster_has_materialized_views(cluster_state)
+
         for node in cluster_state.nodes.values():
             # Get CPU count from host_cpu_CPU (last CPU ID, so add 1 for actual count)
             cpu_count = None
@@ -721,20 +749,39 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     writes_val = int(concurrent_writes) if concurrent_writes else 32
                     counter_writes_val = int(concurrent_counter_writes) if concurrent_counter_writes else 32
                     mv_writes_val = int(concurrent_materialized_view_writes) if concurrent_materialized_view_writes else 32
-                    
+
                     # Calculate RECOMMENDED values for concurrent operations
                     recommended_reads = 16 * cpu_count  # As per user requirement
                     recommended_writes = 16 * cpu_count  # As per user requirement
                     recommended_counter_writes = 16 * cpu_count  # Same as writes
-                    recommended_mv_writes = 32  # Keep default for MV writes
-                    
+
+                    # Materialized view writes are only relevant if the cluster actually
+                    # uses MVs. Including a phantom 32 for clusters with no views inflates
+                    # the native_transport_max_threads target unnecessarily.
+                    if has_mvs:
+                        recommended_mv_writes = 32
+                        sum_formula = "concurrent_reads + concurrent_writes + concurrent_counter_writes + concurrent_materialized_view_writes"
+                    else:
+                        recommended_mv_writes = 0
+                        sum_formula = "concurrent_reads + concurrent_writes + concurrent_counter_writes"
+
                     # Calculate recommended native_transport_max_threads
-                    # Should be sum of all RECOMMENDED concurrent operations
                     recommended_native_threads = recommended_reads + recommended_writes + recommended_counter_writes + recommended_mv_writes
-                    
+
                     native_threads_val = int(native_transport_max_threads)
-                    
+
                     if native_threads_val < recommended_native_threads:
+                        ctx = {
+                            "node_id": node.host_id,
+                            "native_transport_max_threads": native_threads_val,
+                            "concurrent_reads": reads_val,
+                            "concurrent_writes": writes_val,
+                            "concurrent_counter_writes": counter_writes_val,
+                            "recommended_value": f"{recommended_native_threads}",
+                            "config_location": "cassandra.yaml",
+                        }
+                        if has_mvs:
+                            ctx["concurrent_materialized_view_writes"] = mv_writes_val
                         recommendations.append(
                             self._create_recommendation(
                                 title="Low Native Transport Max Threads (native_transport_max_threads)",
@@ -742,16 +789,9 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                                 severity=Severity.WARNING,
                                 category="configuration",
                                 impact="May limit concurrent client operations and cause thread pool saturation",
-                                recommendation=f"Increase native_transport_max_threads to {recommended_native_threads} (sum of concurrent_reads + concurrent_writes + concurrent_counter_writes + concurrent_materialized_view_writes) in cassandra.yaml",
+                                recommendation=f"Increase native_transport_max_threads to {recommended_native_threads} (sum of {sum_formula}) in cassandra.yaml",
                                 current_value=f"native_transport_max_threads={native_threads_val}",
-                                node_id=node.host_id,
-                                native_transport_max_threads=native_threads_val,
-                                concurrent_reads=reads_val,
-                                concurrent_writes=writes_val,
-                                concurrent_counter_writes=counter_writes_val,
-                                concurrent_materialized_view_writes=mv_writes_val,
-                                recommended_value=f"{recommended_native_threads}",
-                                config_location="cassandra.yaml"
+                                **ctx,
                             )
                         )
                 except (ValueError, TypeError):

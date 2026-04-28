@@ -2,10 +2,51 @@
 Base analyzer class
 """
 
+import re
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List
-from ..models import ClusterState, Recommendation
+from typing import Any, Dict, List, Optional
+
 from ..config import Config
+from ..models import ClusterState, Recommendation
+
+# Cassandra 5.0 renamed many ``*_in_ms`` / ``*_in_mb`` settings to use the
+# duration / data-size syntax (``200ms``, ``5s``, ``1h``, ``128MiB``). The
+# AxonOps agent surfaces whichever form the node actually has, so analyzers
+# need to be able to read either variant.
+_DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$", re.IGNORECASE)
+_DURATION_UNITS_MS = {
+    None: 1,
+    "ms": 1,
+    "s": 1000,
+    "m": 60_000,
+    "h": 3_600_000,
+    "d": 86_400_000,
+}
+
+
+def _parse_duration_to_ms(value: Any) -> Optional[int]:
+    """Parse a Cassandra duration into milliseconds.
+
+    Accepts plain integers (treated as milliseconds, matching the legacy
+    ``*_in_ms`` convention), bare numeric strings, and the 5.x duration
+    syntax (``200ms``, ``5s``, ``1h``). Returns ``None`` for unparseable
+    input.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    match = _DURATION_RE.match(str(value))
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = (match.group(2) or "").lower() or None
+    factor = _DURATION_UNITS_MS.get(unit)
+    if factor is None:
+        return None
+    return int(number * factor)
 
 
 class BaseAnalyzer(ABC):
@@ -89,9 +130,28 @@ class BaseAnalyzer(ABC):
         """Check if a keyspace is a system keyspace"""
         system_keyspaces = {
             'system',
-            'system_auth', 
+            'system_auth',
             'system_distributed',
             'system_schema',
             'system_traces'
         }
         return keyspace_name in system_keyspaces
+
+    def _get_duration_ms(self, node, base_name: str) -> Optional[int]:
+        """Read a duration setting from a node's Details, in milliseconds.
+
+        Tries ``comp_<base_name>_in_ms`` (legacy 4.x and earlier) first, then
+        falls back to ``comp_<base_name>`` which on 5.x carries duration syntax
+        like ``200ms`` / ``5s`` / ``1h``. Returns ``None`` if neither is set
+        or the value cannot be parsed.
+        """
+        details = getattr(node, "Details", {}) or {}
+        legacy = details.get(f"comp_{base_name}_in_ms")
+        if legacy is not None:
+            parsed = _parse_duration_to_ms(legacy)
+            if parsed is not None:
+                return parsed
+        modern = details.get(f"comp_{base_name}")
+        if modern is not None:
+            return _parse_duration_to_ms(modern)
+        return None

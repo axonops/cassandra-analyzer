@@ -2,12 +2,52 @@
 Configuration analyzer - checks cluster and node configuration
 """
 
+import re
 import structlog
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from ..models import ClusterState, Recommendation, Severity
+from ..utils import V5_0, version_at_least
 from .base import BaseAnalyzer
 
 logger = structlog.get_logger()
+
+# Java versions <= 1.8 use the old "1.X" scheme; 9+ use "X.Y.Z". Match either.
+_JAVA_VERSION_RE = re.compile(r"(?:1\.)?(\d{1,2})(?:[._]\d+)*")
+
+
+def _parse_java_major(value: Any) -> Optional[int]:
+    """Best-effort parse of a Java version string to its major number.
+
+    Handles ``"1.8.0_392"`` → 8, ``"11.0.21"`` → 11, ``"17"`` → 17,
+    ``"21.0.1+12"`` → 21. Returns None if the input doesn't look like a
+    Java version.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    match = _JAVA_VERSION_RE.search(s)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _detect_java_major(node) -> Optional[int]:
+    """Determine the Java major version a node is running, if known."""
+    details = getattr(node, "Details", {}) or {}
+    for key in (
+        "comp_jvm_version",
+        "comp_java_version",
+        "comp_jvm_java.version",
+        "comp_jvm_java.specification.version",
+        "jvm_version",
+    ):
+        major = _parse_java_major(details.get(key))
+        if major is not None:
+            return major
+    return None
 
 
 class ConfigurationAnalyzer(BaseAnalyzer):
@@ -121,7 +161,9 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         "heap_size_str": heap_size_str,
                         "gc_algorithm": gc_algorithm,
                         "system_memory_bytes": system_memory_bytes,
-                        "jvm_args": jvm_args
+                        "jvm_args": jvm_args,
+                        "java_major": _detect_java_major(node),
+                        "cassandra_version": node.Details.get("comp_releaseVersion") or node.Details.get("release_version"),
                     })
                     
                     if heap_size_bytes:
@@ -190,7 +232,9 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         config["heap_size_bytes"],
                         config["gc_algorithm"],
                         config["system_memory_bytes"],
-                        config["node"]
+                        config["node"],
+                        java_major=config.get("java_major"),
+                        cassandra_version=config.get("cassandra_version"),
                     )
                     recommendations.extend(node_recommendations)
             
@@ -199,9 +243,43 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             logger.error(f"JVM settings analysis failed: {str(e)}")
             return []
     
-    def _get_jvm_heap_recommendations(self, heap_size: int, gc_algorithm: str, system_memory: int, node_identifier: str) -> List[Recommendation]:
+    def _get_jvm_heap_recommendations(
+        self,
+        heap_size: int,
+        gc_algorithm: str,
+        system_memory: int,
+        node_identifier: str,
+        java_major: Optional[int] = None,
+        cassandra_version: Optional[str] = None,
+    ) -> List[Recommendation]:
         """Generate JVM heap recommendations"""
         recommendations = []
+        is_5x = version_at_least(cassandra_version, V5_0)
+        # Be conservative: if we don't know the JDK major, fall back to
+        # behaviour that matches a modern (11+) deployment, since CMS is
+        # already explicitly handled below and users on legacy JDK 8 will
+        # also be flagged through the CMS branch.
+        java_supports_shenandoah = java_major is None or java_major >= 11
+        java_supports_zgc = java_major is None or java_major >= 11
+        java_modern = java_major is None or java_major >= 17
+
+        # On Cassandra 5.x, Java 17 is the recommended LTS. Flag clusters that
+        # are still on Java 8 or 11 so operators consider upgrading.
+        if is_5x and java_major is not None and java_major < 17:
+            recommendations.append(
+                self._create_recommendation(
+                    title=f"Cassandra 5.x Running on Java {java_major}",
+                    description=f"Node {node_identifier} runs Cassandra 5.x on Java {java_major}",
+                    severity=Severity.INFO,
+                    category="configuration",
+                    impact="Cassandra 5.0 supports Java 11 and Java 17; Java 17 is the current LTS and unlocks ZGC for large heaps",
+                    recommendation="Plan an upgrade to Java 17 (LTS) for new performance and GC options",
+                    node=node_identifier,
+                    java_major=java_major,
+                    cassandra_version=cassandra_version,
+                    config_location="JVM startup flags",
+                )
+            )
         
         # Convert bytes to more readable units
         heap_gb = heap_size / (1024**3) if heap_size else 0
@@ -278,22 +356,41 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 )
         
         elif gc_algorithm.upper() in ["G1", "G1GC"]:
-            # G1GC recommendations - suggest Shenandoah as better alternative
-            recommendations.append(
-                self._create_recommendation(
-                    title="Consider Shenandoah GC Instead of G1GC",
-                    description=f"Node {node_identifier} uses G1GC",
-                    severity=Severity.INFO,
-                    category="configuration",
-                    impact="G1GC can have longer pause times compared to Shenandoah",
-                    recommendation="Consider migrating to Shenandoah GC (requires JDK 11+) for lower and more predictable latencies",
-                    node=node_identifier,
-                    current_gc=gc_algorithm,
-                    config_location="JVM startup flags"
+            # G1GC recommendations - suggest a low-pause alternative if the JDK supports one.
+            if java_modern:
+                alt_gc_text = "ZGC (recommended on Java 17+) or Shenandoah"
+                alt_impact = "G1GC can have longer pause times than ZGC or Shenandoah, which are mature on Java 17+"
+            elif java_supports_shenandoah:
+                alt_gc_text = "Shenandoah GC"
+                alt_impact = "G1GC can have longer pause times compared to Shenandoah"
+            else:
+                # Pre-JDK-11 — neither ZGC nor Shenandoah is generally available.
+                alt_gc_text = None
+                alt_impact = None
+
+            if alt_gc_text:
+                recommendations.append(
+                    self._create_recommendation(
+                        title=f"Consider {alt_gc_text} Instead of G1GC",
+                        description=f"Node {node_identifier} uses G1GC" + (f" on Java {java_major}" if java_major else ""),
+                        severity=Severity.INFO,
+                        category="configuration",
+                        impact=alt_impact,
+                        recommendation=f"Consider migrating to {alt_gc_text} for lower and more predictable latencies",
+                        node=node_identifier,
+                        current_gc=gc_algorithm,
+                        java_major=java_major,
+                        config_location="JVM startup flags"
+                    )
                 )
-            )
             
             if heap_gb < 20:
+                if java_modern:
+                    fallback_advice = "Increase heap size to 20-31GB, or switch to ZGC / Shenandoah which handle smaller heaps better"
+                elif java_supports_shenandoah:
+                    fallback_advice = "Increase heap size to 20-31GB, or switch to Shenandoah GC (JDK 11+)"
+                else:
+                    fallback_advice = "Increase heap size to 20-31GB"
                 recommendations.append(
                     self._create_recommendation(
                         title="Small Heap Size for G1GC",
@@ -301,7 +398,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         severity=Severity.WARNING,
                         category="configuration",
                         impact="G1GC performs poorly with small heaps",
-                        recommendation="Increase heap size to 20-31GB or switch to Shenandoah GC (JDK 11+)",
+                        recommendation=fallback_advice,
                         node=node_identifier,
                         current_heap_gb=heap_gb,
                         config_location="JVM startup flags"
@@ -310,6 +407,12 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             
             # Check compressed OOPs limit (32GB)
             if heap_gb > 32:
+                if java_modern:
+                    large_heap_advice = "Decrease heap size to 31GB, or switch to ZGC / Shenandoah which handle large heaps without losing compressed OOPs"
+                elif java_supports_shenandoah:
+                    large_heap_advice = "Decrease heap size to 31GB, switch to Shenandoah GC (which handles large heaps better), or consider multiple smaller nodes"
+                else:
+                    large_heap_advice = "Decrease heap size to 31GB or consider multiple smaller nodes"
                 recommendations.append(
                     self._create_recommendation(
                         title="Heap Size Above Compressed OOPs Limit",
@@ -317,7 +420,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         severity=Severity.WARNING,
                         category="configuration",
                         impact="Loss of compressed OOPs optimization, increased memory overhead",
-                        recommendation="Decrease heap size to 31GB, switch to Shenandoah GC (which handles large heaps better), or consider multiple smaller nodes",
+                        recommendation=large_heap_advice,
                         node=node_identifier,
                         current_heap_gb=heap_gb,
                         config_location="JVM startup flags"
@@ -376,20 +479,38 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 )
         
         elif gc_algorithm.upper() == "ZGC":
-            # ZGC is also a good low-latency collector
-            recommendations.append(
-                self._create_recommendation(
-                    title="ZGC Detected",
-                    description=f"Node {node_identifier} uses ZGC for low-latency performance",
-                    severity=Severity.INFO,
-                    category="configuration",
-                    impact="Good choice for low pause times, though Shenandoah may offer better throughput for Cassandra",
-                    recommendation="Consider Shenandoah GC as an alternative for potentially better throughput with similar low latency",
-                    node=node_identifier,
-                    current_gc=gc_algorithm,
-                    config_location="JVM startup flags"
+            if java_major and java_major >= 17:
+                # ZGC matured significantly in Java 17 (production-ready) and Java 21 (generational ZGC).
+                recommendations.append(
+                    self._create_recommendation(
+                        title="ZGC Detected (Recommended on Java 17+)",
+                        description=f"Node {node_identifier} uses ZGC on Java {java_major}",
+                        severity=Severity.INFO,
+                        category="configuration",
+                        impact="ZGC delivers sub-millisecond pause times and scales to very large heaps; on Java 21 generational ZGC further reduces overhead",
+                        recommendation="Monitor GC logs to ensure pause times meet SLAs; consider enabling generational ZGC (-XX:+ZGenerational) on Java 21",
+                        node=node_identifier,
+                        current_gc=gc_algorithm,
+                        java_major=java_major,
+                        config_location="JVM startup flags"
+                    )
                 )
-            )
+            else:
+                # On Java 11 ZGC is still experimental; Shenandoah is a safer choice.
+                recommendations.append(
+                    self._create_recommendation(
+                        title="ZGC Detected",
+                        description=f"Node {node_identifier} uses ZGC" + (f" on Java {java_major}" if java_major else ""),
+                        severity=Severity.INFO,
+                        category="configuration",
+                        impact="ZGC was experimental before Java 15 and only became production-ready on Java 17",
+                        recommendation="Upgrade to Java 17+ before relying on ZGC in production, or switch to Shenandoah GC",
+                        node=node_identifier,
+                        current_gc=gc_algorithm,
+                        java_major=java_major,
+                        config_location="JVM startup flags"
+                    )
+                )
         
         elif gc_algorithm == "unknown":
             recommendations.append(
