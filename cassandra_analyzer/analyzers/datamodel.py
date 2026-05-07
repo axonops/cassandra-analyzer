@@ -6,6 +6,7 @@ from typing import Dict, Any, List
 import html
 import re
 from ..models import ClusterState, Recommendation, Severity
+from ..utils import V5_0, cluster_at_least, cluster_min_version
 from .base import BaseAnalyzer
 from .table_analyzer import TableAnalyzer
 
@@ -347,15 +348,43 @@ class DataModelAnalyzer(BaseAnalyzer):
     def _analyze_compaction_strategies(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze compaction strategies from keyspace schema"""
         recommendations = []
-        
+
+        cluster_is_5x = cluster_at_least(cluster_state, V5_0)
+        min_version = cluster_min_version(cluster_state)
+        any_node_pre_5 = min_version is not None and min_version < V5_0
+
+        ucs_legacy_tables = []
+        stcs_lcs_on_5x = []
+
         for ks_name, keyspace in cluster_state.keyspaces.items():
             # Skip system keyspaces
             if self._is_system_keyspace(ks_name):
                 continue
-            
+
             for table_name, table in keyspace.tables_dict.items():
                 compaction_strategy = table.CompactionStrategy
-                
+
+                # Cassandra 5.0 introduced UnifiedCompactionStrategy. It will
+                # fail to start on a node running an older release, so flag
+                # any pre-5.0 node in the cluster as a hard incompatibility.
+                if "UnifiedCompactionStrategy" in compaction_strategy:
+                    if any_node_pre_5:
+                        ucs_legacy_tables.append(f"{ks_name}.{table_name}")
+                    # On a fully-5.x cluster UCS is the recommended default,
+                    # so we don't emit a recommendation for it.
+                    continue
+
+                # On 5.0+ clusters, surface STCS/LCS as candidates for UCS
+                # migration (TWCS still has a legitimate niche for time-series
+                # data so we leave its existing recommendation alone).
+                if cluster_is_5x and (
+                    "SizeTieredCompactionStrategy" in compaction_strategy
+                    or "LeveledCompactionStrategy" in compaction_strategy
+                ):
+                    stcs_lcs_on_5x.append(
+                        (f"{ks_name}.{table_name}", compaction_strategy)
+                    )
+
                 # Check for deprecated strategies
                 if "SizeTieredCompactionStrategy" in compaction_strategy:
                     # Get table read/write patterns if available
@@ -397,46 +426,171 @@ class DataModelAnalyzer(BaseAnalyzer):
                             current_strategy="TimeWindowCompactionStrategy"
                         )
                     )
-        
-        return recommendations
-    
-    def _analyze_secondary_indexes(self, cluster_state: ClusterState) -> List[Recommendation]:
-        """Analyze secondary indexes in schema"""
-        recommendations = []
-        
-        total_indexes = 0
-        indexes_by_keyspace = {}
-        
-        for ks_name, keyspace in cluster_state.keyspaces.items():
-            # Skip system keyspaces
-            if self._is_system_keyspace(ks_name):
-                continue
-            
-            for table_name, table in keyspace.tables_dict.items():
-                # Parse CQL to find secondary indexes
-                if hasattr(table, 'CQL') and table.CQL:
-                    cql_lower = table.CQL.lower()
-                    if 'create index' in cql_lower or 'secondary index' in cql_lower:
-                        total_indexes += 1
-                        if ks_name not in indexes_by_keyspace:
-                            indexes_by_keyspace[ks_name] = []
-                        indexes_by_keyspace[ks_name].append(table_name)
-        
-        # Report on secondary index usage
-        if total_indexes > 0:
+
+        if ucs_legacy_tables:
             recommendations.append(
                 self._create_recommendation(
-                    title="Secondary Indexes Detected",
-                    description=f"Found {total_indexes} tables with secondary indexes",
-                    severity=Severity.WARNING,
+                    title="UnifiedCompactionStrategy Used on Pre-5.0 Cluster",
+                    description=(
+                        f"{len(ucs_legacy_tables)} tables use UnifiedCompactionStrategy "
+                        f"but at least one node is running Cassandra < 5.0"
+                    ),
+                    severity=Severity.CRITICAL,
                     category="datamodel",
-                    impact="Secondary indexes can severely impact write performance and cluster stability",
-                    recommendation="Consider denormalizing data or using application-level indexing instead",
-                    total_indexes=total_indexes,
-                    indexes_by_keyspace=indexes_by_keyspace
+                    impact="Pre-5.0 nodes cannot load tables with UnifiedCompactionStrategy and will fail to start or refuse the schema",
+                    recommendation="Either complete the upgrade to Cassandra 5.x on all nodes, or switch the affected tables back to STCS/LCS/TWCS until the upgrade is complete",
+                    tables_affected=ucs_legacy_tables,
+                    current_strategy="UnifiedCompactionStrategy",
                 )
             )
-        
+
+        if stcs_lcs_on_5x:
+            tables_summary = [t for t, _ in stcs_lcs_on_5x]
+            recommendations.append(
+                self._create_recommendation(
+                    title="Consider Unified Compaction Strategy (UCS) on 5.x",
+                    description=(
+                        f"{len(stcs_lcs_on_5x)} tables use STCS or LCS on a Cassandra 5.x cluster"
+                    ),
+                    severity=Severity.INFO,
+                    category="datamodel",
+                    impact="UCS adapts between size-tiered and leveled behaviour automatically and is the recommended default in Cassandra 5.0",
+                    recommendation="Evaluate migrating to UnifiedCompactionStrategy. Keep TWCS where time-series semantics matter.",
+                    tables_affected=tables_summary,
+                )
+            )
+
+        return recommendations
+    
+    # Each CREATE [CUSTOM] INDEX statement; group 1 is the body of the
+    # statement (up to the next semicolon or end of input) which we then
+    # inspect for USING '...'.
+    _CREATE_INDEX_RE = re.compile(
+        r"(CREATE\s+(?:CUSTOM\s+)?INDEX\b[^;]*)",
+        re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    _CREATE_INDEX_USING_RE = re.compile(r"USING\s+'([^']+)'", re.IGNORECASE)
+
+    @classmethod
+    def _classify_index(cls, statement: str) -> str:
+        """Return 'sai', 'sasi', 'custom', or 'legacy' for a CREATE INDEX statement."""
+        is_custom = bool(re.match(r"\s*CREATE\s+CUSTOM\s+INDEX", statement, re.IGNORECASE))
+        if not is_custom:
+            return "legacy"
+        using_match = cls._CREATE_INDEX_USING_RE.search(statement)
+        u = using_match.group(1).lower() if using_match else ""
+        if u in ("sai", "storageattachedindex") or u.endswith(".storageattachedindex"):
+            return "sai"
+        if "sasi" in u:
+            return "sasi"
+        return "custom"
+
+    def _analyze_secondary_indexes(self, cluster_state: ClusterState) -> List[Recommendation]:
+        """Analyze secondary indexes in schema, distinguishing SAI from legacy 2i."""
+        recommendations = []
+
+        legacy_by_keyspace: Dict[str, List[str]] = {}
+        sai_by_keyspace: Dict[str, List[str]] = {}
+        sasi_by_keyspace: Dict[str, List[str]] = {}
+        legacy_total = 0
+        sai_total = 0
+        sasi_total = 0
+
+        for ks_name, keyspace in cluster_state.keyspaces.items():
+            if self._is_system_keyspace(ks_name):
+                continue
+
+            for table_name, table in keyspace.tables_dict.items():
+                if not (hasattr(table, "CQL") and table.CQL):
+                    continue
+                for match in self._CREATE_INDEX_RE.finditer(table.CQL):
+                    kind = self._classify_index(match.group(1))
+                    if kind == "sai":
+                        sai_total += 1
+                        sai_by_keyspace.setdefault(ks_name, []).append(table_name)
+                    elif kind == "sasi":
+                        sasi_total += 1
+                        sasi_by_keyspace.setdefault(ks_name, []).append(table_name)
+                    elif kind == "legacy":
+                        legacy_total += 1
+                        legacy_by_keyspace.setdefault(ks_name, []).append(table_name)
+                    # 'custom' (non-SAI/SASI) is rare and we don't have generic guidance.
+
+        cluster_is_5x = cluster_at_least(cluster_state, V5_0)
+        min_version = cluster_min_version(cluster_state)
+        any_node_pre_5 = min_version is not None and min_version < V5_0
+
+        if legacy_total > 0:
+            if cluster_is_5x:
+                recommendations.append(
+                    self._create_recommendation(
+                        title="Legacy Secondary Indexes Detected (Consider SAI)",
+                        description=f"Found {legacy_total} legacy secondary indexes on a Cassandra 5.x cluster",
+                        severity=Severity.WARNING,
+                        category="datamodel",
+                        impact="Legacy 2i scales poorly on writes and across nodes; Storage-Attached Indexes (SAI) are the recommended replacement on 5.x",
+                        recommendation="Evaluate migrating these indexes to SAI (CREATE CUSTOM INDEX ... USING 'StorageAttachedIndex'), or denormalise the data if the index is purely a query-side convenience",
+                        total_indexes=legacy_total,
+                        indexes_by_keyspace=legacy_by_keyspace,
+                    )
+                )
+            else:
+                recommendations.append(
+                    self._create_recommendation(
+                        title="Secondary Indexes Detected",
+                        description=f"Found {legacy_total} tables with secondary indexes",
+                        severity=Severity.WARNING,
+                        category="datamodel",
+                        impact="Secondary indexes can severely impact write performance and cluster stability",
+                        recommendation="Consider denormalizing data or using application-level indexing instead",
+                        total_indexes=legacy_total,
+                        indexes_by_keyspace=legacy_by_keyspace,
+                    )
+                )
+
+        if sai_total > 0:
+            if any_node_pre_5:
+                # SAI requires 5.0+ on every node that needs to load the schema.
+                recommendations.append(
+                    self._create_recommendation(
+                        title="SAI Indexes Used on Pre-5.0 Cluster",
+                        description=f"Found {sai_total} Storage-Attached Indexes but at least one node is running Cassandra < 5.0",
+                        severity=Severity.CRITICAL,
+                        category="datamodel",
+                        impact="Pre-5.0 nodes cannot load tables with SAI indexes",
+                        recommendation="Complete the upgrade to Cassandra 5.x on all nodes before introducing SAI",
+                        total_indexes=sai_total,
+                        indexes_by_keyspace=sai_by_keyspace,
+                    )
+                )
+            else:
+                recommendations.append(
+                    self._create_recommendation(
+                        title="Storage-Attached Indexes (SAI) Detected",
+                        description=f"Found {sai_total} SAI indexes",
+                        severity=Severity.INFO,
+                        category="datamodel",
+                        impact="SAI is the modern indexing mechanism in Cassandra 5.x and is well-suited to most secondary-index use cases",
+                        recommendation="No action required; ensure indexed columns reflect actual query patterns",
+                        total_indexes=sai_total,
+                        indexes_by_keyspace=sai_by_keyspace,
+                    )
+                )
+
+        if sasi_total > 0:
+            recommendations.append(
+                self._create_recommendation(
+                    title="SASI Indexes Detected",
+                    description=f"Found {sasi_total} SASI indexes",
+                    severity=Severity.WARNING,
+                    category="datamodel",
+                    impact="SASI is experimental and not recommended for production",
+                    recommendation="Migrate to SAI on Cassandra 5.x, or denormalise the data on older versions",
+                    total_indexes=sasi_total,
+                    indexes_by_keyspace=sasi_by_keyspace,
+                )
+            )
+
         return recommendations
     
     def _analyze_collection_types(self, cluster_state: ClusterState) -> List[Recommendation]:
@@ -509,34 +663,50 @@ class DataModelAnalyzer(BaseAnalyzer):
     def _analyze_materialized_views(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze materialized views usage"""
         recommendations = []
-        
+
         materialized_views = []
-        
+
         for ks_name, keyspace in cluster_state.keyspaces.items():
             # Skip system keyspaces
             if self._is_system_keyspace(ks_name):
                 continue
-            
+
             for table_name, table in keyspace.tables_dict.items():
                 if hasattr(table, 'CQL') and table.CQL:
                     cql_lower = table.CQL.lower()
                     if 'create materialized view' in cql_lower or 'materialized view' in cql_lower:
                         materialized_views.append(f"{ks_name}.{table_name}")
-        
-        # Report on materialized view usage
-        if materialized_views:
-            recommendations.append(
-                self._create_recommendation(
-                    title="Materialized Views Detected",
-                    description=f"Found {len(materialized_views)} materialized views",
-                    severity=Severity.CRITICAL,
-                    category="datamodel",
-                    impact="Materialized views are experimental and can cause serious performance issues",
-                    recommendation="Consider denormalization or application-level view maintenance instead",
-                    materialized_views=materialized_views
-                )
+
+        if not materialized_views:
+            return recommendations
+
+        cluster_is_5x = cluster_at_least(cluster_state, V5_0)
+        if cluster_is_5x:
+            recommendation_text = (
+                "Materialized views remain marked experimental in Cassandra 5.x and are not recommended for "
+                "new workloads. Replace with application-side denormalisation, or — where the use case fits — "
+                "a Storage-Attached Index (SAI) on the source table."
             )
-        
+            impact_text = (
+                "Materialized views in 5.x carry the same long-standing correctness and operational issues as "
+                "earlier releases (silent data loss on repair, write amplification) and have no roadmap to GA"
+            )
+        else:
+            recommendation_text = "Consider denormalization or application-level view maintenance instead"
+            impact_text = "Materialized views are experimental and can cause serious performance issues"
+
+        recommendations.append(
+            self._create_recommendation(
+                title="Materialized Views Detected",
+                description=f"Found {len(materialized_views)} materialized views",
+                severity=Severity.CRITICAL,
+                category="datamodel",
+                impact=impact_text,
+                recommendation=recommendation_text,
+                materialized_views=materialized_views,
+            )
+        )
+
         return recommendations
     
     def _get_table_metric_value(self, metrics: Dict, metric_name: str, keyspace: str, table: str) -> float:

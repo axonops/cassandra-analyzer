@@ -515,17 +515,17 @@ class InfrastructureAnalyzer(BaseAnalyzer):
                     if swappiness_val > 1:
                         recommendations.append(
                             self._create_recommendation(
-                                title="High VM Swappiness Setting",
+                                title="High vm.swappiness Setting",
                                 description=f"Node {self._get_node_identifier(node)} has vm.swappiness={swappiness_val}",
                                 severity=Severity.WARNING,
                                 category="infrastructure",
                                 impact="Cassandra may swap to disk causing severe performance degradation",
                                 recommendation="Set vm.swappiness=1 in /etc/sysctl.conf or /etc/sysctl.d/ and run 'sysctl -p'",
-                                current_value=f"vm.swappiness={swappiness_val}",
+                                current_value=str(swappiness_val),
                                 node_id=node.host_id,
                                 current_swappiness=swappiness_val,
                                 component="Memory",
-                                recommended_value="vm.swappiness=1",
+                                recommended_value="1",
                                 config_location="/etc/sysctl.conf or /etc/sysctl.d/"
                             )
                         )

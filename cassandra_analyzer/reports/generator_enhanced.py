@@ -608,22 +608,32 @@ Your Cassandra cluster consists of {{ cluster_state.get_total_nodes() if cluster
   {% set dc = node.DC if node.DC else 'Unknown' %}
   {% set rack = node.rack if node.rack else 'default' %}
   {% set node_hostname = node.Details.get('host_Hostname', '') %}
-  {# Check if node is a seed - handle domain mismatches #}
-  {% set is_seed = false %}
-  {% if node_hostname %}
-    {% if node_hostname in all_seed_hostnames %}
-      {% set is_seed = true %}
-    {% else %}
-      {# Check for hostname match ignoring domain #}
-      {% set node_base = node_hostname.split('.')[0] if '.' in node_hostname else node_hostname %}
-      {% for seed in all_seed_hostnames if not is_seed %}
-        {% set seed_base = seed.split('.')[0] if '.' in seed else seed %}
-        {% if node_base == seed_base %}
-          {% set is_seed = true %}
+  {% set node_listen = node.Details.get('comp_listen_address', '') %}
+  {% set node_broadcast = node.Details.get('comp_broadcast_address', '') %}
+  {# Check if node is a seed. Seeds may be hostnames or IPs and identify the
+     gossip address, so match against hostname + listen/broadcast addresses
+     (not rpc_address). Also tolerate domain mismatches on hostnames.
+     A namespace is needed so writes inside {% for %} are visible outside. #}
+  {% set seed_ns = namespace(is_seed=false) %}
+  {% set node_addrs = [] %}
+  {% if node_hostname %}{% set _ = node_addrs.append(node_hostname) %}{% endif %}
+  {% if node_listen %}{% set _ = node_addrs.append(node_listen) %}{% endif %}
+  {% if node_broadcast %}{% set _ = node_addrs.append(node_broadcast) %}{% endif %}
+  {% for addr in node_addrs if not seed_ns.is_seed %}
+    {% if addr in all_seed_hostnames %}
+      {% set seed_ns.is_seed = true %}
+    {% elif '.' in addr and not addr.replace('.', '').isdigit() %}
+      {% set node_base = addr.split('.')[0] %}
+      {% for seed in all_seed_hostnames if not seed_ns.is_seed %}
+        {% if '.' in seed and not seed.replace('.', '').isdigit() %}
+          {% if node_base == seed.split('.')[0] %}
+            {% set seed_ns.is_seed = true %}
+          {% endif %}
         {% endif %}
       {% endfor %}
     {% endif %}
-  {% endif %}
+  {% endfor %}
+  {% set is_seed = seed_ns.is_seed %}
   {% set version = node.Details.get('comp_releaseVersion', node.Details.get('release_version', 'Unknown')) %}
   
   {# Count nodes per DC/rack #}
@@ -805,8 +815,11 @@ _Security settings are configured in **cassandra.yaml** unless otherwise noted._
 |---------------|--------|---------------|------------|
 {% set auth_enabled = section.data.summary.get('auth_enabled', False) %}{% set authz_enabled = section.data.summary.get('authz_enabled', False) %}{% set authenticator = section.data.summary.get('authenticator', 'Unknown') %}{% set authorizer = section.data.summary.get('authorizer', 'Unknown') %}| Authentication | {{ '✅ Enabled' if auth_enabled else '❌ Disabled' }} | {{ authenticator }} | {{ '✅ Low' if auth_enabled else '🔴 High' }} |
 | Authorization | {{ '✅ Enabled' if authz_enabled else '❌ Disabled' }} | {{ authorizer }} | {{ '✅ Low' if authz_enabled else '🔴 High' }} |
+{# Encryption options disabled since AxonOps does not return this information #}
+{#
 | Encryption in Transit | ❓ Unknown | Not checked | 🟡 Medium |
 | Encryption at Rest | ❓ Unknown | Not checked | 🟡 Medium |
+#}
 
 ### Security Issues Detail
 
@@ -919,22 +932,32 @@ This section provides a detailed view of all nodes in the cluster.
 {% set node_list = [] %}
 {% for node_id, node in cluster_state.nodes.items() %}
   {% set node_hostname = node.Details.get('host_Hostname', '') %}
-  {# Check if node is a seed - handle domain mismatches #}
-  {% set is_seed = false %}
-  {% if node_hostname %}
-    {% if node_hostname in all_seed_hostnames %}
-      {% set is_seed = true %}
-    {% else %}
-      {# Check for hostname match ignoring domain #}
-      {% set node_base = node_hostname.split('.')[0] if '.' in node_hostname else node_hostname %}
-      {% for seed in all_seed_hostnames if not is_seed %}
-        {% set seed_base = seed.split('.')[0] if '.' in seed else seed %}
-        {% if node_base == seed_base %}
-          {% set is_seed = true %}
+  {% set node_listen = node.Details.get('comp_listen_address', '') %}
+  {% set node_broadcast = node.Details.get('comp_broadcast_address', '') %}
+  {# Seeds map to gossip addresses, which may be hostnames or IPs. Match
+     against hostname + listen/broadcast addresses (not rpc_address) and
+     tolerate domain mismatches on hostnames. Namespace required so writes
+     inside {% for %} propagate to the outer scope. #}
+  {% set seed_ns = namespace(is_seed=false) %}
+  {% set node_addrs = [] %}
+  {% if node_hostname %}{% set _ = node_addrs.append(node_hostname) %}{% endif %}
+  {% if node_listen %}{% set _ = node_addrs.append(node_listen) %}{% endif %}
+  {% if node_broadcast %}{% set _ = node_addrs.append(node_broadcast) %}{% endif %}
+  {% for addr in node_addrs if not seed_ns.is_seed %}
+    {% if addr in all_seed_hostnames %}
+      {% set seed_ns.is_seed = true %}
+    {% elif '.' in addr and not addr.replace('.', '').isdigit() %}
+      {% set node_base = addr.split('.')[0] %}
+      {% for seed in all_seed_hostnames if not seed_ns.is_seed %}
+        {% if '.' in seed and not seed.replace('.', '').isdigit() %}
+          {% if node_base == seed.split('.')[0] %}
+            {% set seed_ns.is_seed = true %}
+          {% endif %}
         {% endif %}
       {% endfor %}
     {% endif %}
-  {% endif %}
+  {% endfor %}
+  {% set is_seed = seed_ns.is_seed %}
   {% set node_info = {
     'dc': node.DC if node.DC else 'Unknown',
     'rack': node.rack if node.rack else 'default',

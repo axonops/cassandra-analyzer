@@ -79,14 +79,6 @@ class TestPDFGenerator:
             finally:
                 temp_path.unlink()
 
-    @pytest.mark.skip(reason="Complex mocking of WeasyPrint dependencies")
-    def test_generate_pdf_with_dependencies(self):
-        """Test successful PDF generation when dependencies are available"""
-        # This test is skipped because mocking WeasyPrint's complex dependencies
-        # is not straightforward and doesn't add much value to the test suite.
-        # The important tests are the error handling when dependencies are missing.
-        pass
-
     def test_generate_pdf_file_not_found(self):
         """Test error when markdown file doesn't exist"""
         # Test with PDF available = True so we get past the dependency check

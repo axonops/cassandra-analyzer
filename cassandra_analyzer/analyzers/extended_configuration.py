@@ -2,9 +2,11 @@
 Extended configuration analyzers implementing additional configuration checks
 """
 
+import re
 from typing import Dict, Any, List, Optional
 import structlog
 from ..models import ClusterState, Recommendation, Severity
+from ..utils import V4_0, V5_0, node_version, parse_version, version_at_least
 from .base import BaseAnalyzer
 
 logger = structlog.get_logger()
@@ -69,34 +71,42 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
         recommendations = []
         
         for node in cluster_state.nodes.values():
-            # Check compaction throughput
-            throughput = node.Details.get("comp_compaction_throughput_mb_per_sec", 16)
+            # 5.0 renamed compaction_throughput_mb_per_sec → compaction_throughput
+            # (with units, e.g. ``64MiB/s``). Read either form via the helper.
+            throughput_mibps = self._get_rate_mibps(node, "compaction_throughput")
+            if throughput_mibps is None:
+                throughput_mibps = 16.0  # default if neither key surfaces
             concurrent_compactors = node.Details.get("comp_concurrent_compactors", 2)
-            
+
+            # Surface the canonical setting name and value form per cluster version.
+            is_5x = version_at_least(node_version(node), V5_0)
+            setting_name = "compaction_throughput" if is_5x else "compaction_throughput_mb_per_sec"
+            value_str = f"{throughput_mibps:.0f}MiB/s" if is_5x else f"{int(throughput_mibps)} MB/s"
+
             try:
-                throughput_val = int(throughput)
                 compactors_val = int(concurrent_compactors)
-                
+                throughput_val = throughput_mibps  # MiB/s
+
                 # Calculate throughput per compactor
                 if compactors_val > 0:
                     throughput_per_compactor = throughput_val / compactors_val
-                    
+
                     # When throughput is at default AND results in low per-compactor throughput,
                     # create a single combined recommendation
                     if throughput_val == 16 and throughput_per_compactor < 8:
                         recommendations.append(
                             self._create_recommendation(
-                                title="Conservative Compaction Throughput with High Concurrency (compaction_throughput_mb_per_sec, concurrent_compactors)",
-                                description=f"Node {self._get_node_identifier(node)} uses default 16 MB/s throughput with {compactors_val} compactors, resulting in only {throughput_per_compactor:.1f} MB/s per compactor",
+                                title=f"Conservative Compaction Throughput with High Concurrency ({setting_name}, concurrent_compactors)",
+                                description=f"Node {self._get_node_identifier(node)} uses default 16 MiB/s throughput with {compactors_val} compactors, resulting in only {throughput_per_compactor:.1f} MiB/s per compactor",
                                 severity=Severity.WARNING,
                                 category="configuration",
                                 impact="Default throughput spread across many compactors may cause compaction to lag behind writes",
-                                recommendation="Increase compaction_throughput_mb_per_sec to 64 MB/s or reduce concurrent_compactors in cassandra.yaml",
-                                current_value=f"compaction_throughput_mb_per_sec={throughput_val} MB/s, concurrent_compactors={compactors_val}",
+                                recommendation=f"Increase {setting_name} to 64 MiB/s or reduce concurrent_compactors in cassandra.yaml",
+                                current_value=f"{setting_name}={value_str}, concurrent_compactors={compactors_val}",
                                 node_id=node.host_id,
-                                compaction_throughput_mb_per_sec=throughput_val,
+                                compaction_throughput_mibps=throughput_val,
                                 concurrent_compactors=compactors_val,
-                                recommended_value="64 MB/s throughput or fewer compactors",
+                                recommended_value="64 MiB/s throughput or fewer compactors",
                                 config_location="cassandra.yaml"
                             )
                         )
@@ -104,17 +114,17 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     elif throughput_val != 16 and throughput_per_compactor < 8:
                         recommendations.append(
                             self._create_recommendation(
-                                title="Low Compaction Throughput Per Compactor (compaction_throughput_mb_per_sec, concurrent_compactors)",
-                                description=f"Node {self._get_node_identifier(node)} has {throughput_per_compactor:.1f} MB/s per compactor",
+                                title=f"Low Compaction Throughput Per Compactor ({setting_name}, concurrent_compactors)",
+                                description=f"Node {self._get_node_identifier(node)} has {throughput_per_compactor:.1f} MiB/s per compactor",
                                 severity=Severity.WARNING,
                                 category="configuration",
                                 impact="Compaction may lag behind writes causing read performance issues",
-                                recommendation="Increase compaction_throughput_mb_per_sec or reduce concurrent_compactors in cassandra.yaml",
-                                current_value=f"compaction_throughput_mb_per_sec={throughput_val} MB/s, concurrent_compactors={compactors_val}",
+                                recommendation=f"Increase {setting_name} or reduce concurrent_compactors in cassandra.yaml",
+                                current_value=f"{setting_name}={value_str}, concurrent_compactors={compactors_val}",
                                 node_id=node.host_id,
-                                compaction_throughput_mb_per_sec=throughput_val,
+                                compaction_throughput_mibps=throughput_val,
                                 concurrent_compactors=compactors_val,
-                                recommended_value="≥8 MB/s per compactor",
+                                recommended_value="≥8 MiB/s per compactor",
                                 config_location="cassandra.yaml"
                             )
                         )
@@ -122,59 +132,59 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     elif throughput_val == 16 and throughput_per_compactor >= 8:
                         recommendations.append(
                             self._create_recommendation(
-                                title="Conservative Compaction Throughput (compaction_throughput_mb_per_sec)",
-                                description=f"Node {self._get_node_identifier(node)} uses default 16 MB/s compaction throughput",
+                                title=f"Conservative Compaction Throughput ({setting_name})",
+                                description=f"Node {self._get_node_identifier(node)} uses default 16 MiB/s compaction throughput",
                                 severity=Severity.INFO,
                                 category="configuration",
                                 impact="May not utilize available I/O capacity for compaction",
-                                recommendation="Consider increasing compaction_throughput_mb_per_sec to 64 MB/s for modern hardware in cassandra.yaml",
-                                current_value="compaction_throughput_mb_per_sec=16 MB/s",
+                                recommendation=f"Consider increasing {setting_name} to 64 MiB/s for modern hardware in cassandra.yaml",
+                                current_value=f"{setting_name}={value_str}",
                                 node_id=node.host_id,
-                                compaction_throughput_mb_per_sec=throughput_val,
-                                recommended_value="64 MB/s",
+                                compaction_throughput_mibps=throughput_val,
+                                recommended_value="64 MiB/s",
                                 config_location="cassandra.yaml"
                             )
                         )
-                
+
                 # Check for unthrottled compaction
                 if throughput_val == 0:
                     recommendations.append(
                         self._create_recommendation(
-                            title="Unthrottled Compaction (compaction_throughput_mb_per_sec)",
+                            title=f"Unthrottled Compaction ({setting_name})",
                             description=f"Node {self._get_node_identifier(node)} has unlimited compaction throughput",
                             severity=Severity.WARNING,
                             category="configuration",
                             impact="May overwhelm I/O and affect read/write performance",
                             recommendation="Set reasonable compaction throughput limit in cassandra.yaml",
-                            current_value="compaction_throughput_mb_per_sec=0 MB/s (unlimited)",
+                            current_value=f"{setting_name}=0 (unlimited)",
                             node_id=node.host_id,
-                            compaction_throughput_mb_per_sec=throughput_val,
-                            recommended_value="64-128 MB/s",
+                            compaction_throughput_mibps=throughput_val,
+                            recommended_value="64-128 MiB/s",
                             config_location="cassandra.yaml"
                         )
                     )
-                
+
                 # Check for unusually high values
                 if throughput_val > 200:
                     recommendations.append(
                         self._create_recommendation(
-                            title="Very High Compaction Throughput (compaction_throughput_mb_per_sec)",
-                            description=f"Node {self._get_node_identifier(node)} has {throughput_val} MB/s compaction throughput",
+                            title=f"Very High Compaction Throughput ({setting_name})",
+                            description=f"Node {self._get_node_identifier(node)} has {throughput_val:.0f} MiB/s compaction throughput",
                             severity=Severity.WARNING,
                             category="configuration",
                             impact="May overwhelm I/O bandwidth",
                             recommendation="Verify this setting is appropriate for your hardware in cassandra.yaml",
-                            current_value=f"compaction_throughput_mb_per_sec={throughput_val} MB/s",
+                            current_value=f"{setting_name}={value_str}",
                             node_id=node.host_id,
-                            compaction_throughput_mb_per_sec=throughput_val,
+                            compaction_throughput_mibps=throughput_val,
                             config_location="cassandra.yaml"
                         )
                     )
-                
+
             except (ValueError, TypeError):
                 # Handle non-numeric values
                 pass
-        
+
         return recommendations
     
     def _analyze_disk_failure_policy(self, cluster_state: ClusterState) -> List[Recommendation]:
@@ -281,7 +291,7 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                                 category="configuration",
                                 impact="May bottleneck memtable flushing",
                                 recommendation="Consider increasing to at least 2 flush writers in cassandra.yaml",
-                                current_value=f"memtable_flush_writers={flush_writers_val} (actual: {actual_flush_writers})",
+                                current_value=f"{flush_writers_val} (actual: {actual_flush_writers})",
                                 node_id=node.host_id,
                                 memtable_flush_writers=actual_flush_writers,
                                 recommended_value="≥2",
@@ -325,10 +335,31 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
         
         return recommendations
     
+    @staticmethod
+    def _is_k8s_seed_provider(seed_provider: str) -> bool:
+        """Detect K8ssandra-style seed providers that discover seeds dynamically
+        from a Kubernetes service rather than a static cassandra.yaml list.
+
+        Known classes include io.k8ssandra.K8SeedProvider,
+        org.apache.cassandra.locator.K8SeedProvider, and
+        com.instaclustr.cassandra.k8s.K8sSeedProvider. The shared marker is
+        "K8" immediately preceding "SeedProvider" in the class name.
+        """
+        if not seed_provider:
+            return False
+        return bool(re.search(r'K8[Ss]?SeedProvider', seed_provider))
+
     def _analyze_seeds_configuration(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze seed node configuration"""
         recommendations = []
-        
+
+        # K8s seed providers resolve seeds dynamically from a headless service,
+        # so the static "seeds=..." list (if any) is a service DNS name, not a
+        # node hostname. Static existence and per-DC count checks don't apply.
+        for node in cluster_state.nodes.values():
+            if self._is_k8s_seed_provider(node.Details.get("comp_seed_provider", "")):
+                return recommendations
+
         # Extract seed configurations from nodes
         seed_lists = {}
         datacenter_nodes = {}
@@ -375,7 +406,6 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
             if seed_provider:
                 # Parse seed provider string to extract seed hostnames
                 # Format: "org.apache.cassandra.locator.SimpleSeedProvider{seeds=host1,host2,host3}"
-                import re
                 seeds_match = re.search(r'seeds=([^}]+)', seed_provider)
                 if seeds_match:
                     seeds_str = seeds_match.group(1)
@@ -383,23 +413,35 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     seed_hostnames = [s.strip() for s in seeds_str.split(',')]
                     all_seeds.update(seed_hostnames)
                     
-                    # Check for non-existent seed hostnames
-                    # Collect all node hostnames in the cluster
-                    node_hostnames = set()
+                    # Check for non-existent seed hostnames.
+                    # Seeds map to a node's gossip address, which may be specified
+                    # as either a hostname or an IP, so match against host_Hostname
+                    # plus listen/broadcast addresses (NOT rpc_address — seeds are
+                    # gossip, not client traffic).
+                    node_identifiers = set()
+                    node_hostname_bases = set()
                     for cluster_node in cluster_state.nodes.values():
-                        node_hostname = cluster_node.Details.get("host_Hostname", "")
-                        if node_hostname:
-                            node_hostnames.add(node_hostname)
-                    
+                        for key in ("host_Hostname", "comp_listen_address",
+                                    "comp_broadcast_address"):
+                            value = cluster_node.Details.get(key, "")
+                            if value:
+                                node_identifiers.add(value)
+                                if '.' in value and not value.replace('.', '').isdigit():
+                                    node_hostname_bases.add(value.split('.')[0])
+
                     # Check which seeds don't exist in the cluster
                     non_existent_seeds = []
                     for seed in seed_hostnames:
                         # Remove port if present
                         seed_host = seed.split(':')[0] if ':' in seed else seed
-                        
-                        # Check if this seed hostname exists in the cluster
-                        if seed_host not in node_hostnames:
-                            non_existent_seeds.append(seed)
+
+                        if seed_host in node_identifiers:
+                            continue
+                        if '.' in seed_host and not seed_host.replace('.', '').isdigit():
+                            seed_base = seed_host.split('.')[0]
+                            if seed_base in node_hostname_bases or seed_base in node_identifiers:
+                                continue
+                        non_existent_seeds.append(seed)
                     
                     # Create recommendation for non-existent seeds
                     if non_existent_seeds:
@@ -419,29 +461,43 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     
                     break  # All nodes should have the same seed list
         
-        # Now count seeds per DC by matching hostnames
+        # Now count seeds per DC. A node is a seed if any seed entry matches
+        # its hostname or its gossip (listen/broadcast) address. Strip ports
+        # from seeds before comparing.
+        seed_hosts = set()
+        for seed in all_seeds:
+            seed_host = seed.split(':')[0] if ':' in seed else seed
+            seed_hosts.add(seed_host)
+
         for node in cluster_state.nodes.values():
             dc = node.DC
             if dc not in seeds_per_dc:
                 seeds_per_dc[dc] = 0
-            
-            # Check if this node is a seed by hostname
-            node_hostname = node.Details.get("host_Hostname", "")
-            if node_hostname:
-                # Check for exact match first
-                if node_hostname in all_seeds:
-                    seeds_per_dc[dc] += 1
-                else:
-                    # Check if any seed matches this node's hostname pattern
-                    # This handles cases where seed domains might be misconfigured
-                    for seed in all_seeds:
-                        # Extract the base hostname part (before first dot)
-                        node_base = node_hostname.split('.')[0] if '.' in node_hostname else node_hostname
-                        seed_base = seed.split('.')[0] if '.' in seed else seed
-                        # If the base hostnames match, count it as a seed
-                        if node_base == seed_base:
-                            seeds_per_dc[dc] += 1
+
+            node_addresses = set()
+            for key in ("host_Hostname", "comp_listen_address", "comp_broadcast_address"):
+                value = node.Details.get(key, "")
+                if value:
+                    node_addresses.add(value)
+
+            is_seed = False
+            if node_addresses & seed_hosts:
+                is_seed = True
+            else:
+                # Fall back to base-hostname match for misconfigured seed domains.
+                # Only meaningful for true hostnames, not IP addresses.
+                node_bases = {
+                    addr.split('.')[0] for addr in node_addresses
+                    if '.' in addr and not addr.replace('.', '').isdigit()
+                }
+                for seed_host in seed_hosts:
+                    if '.' in seed_host and not seed_host.replace('.', '').isdigit():
+                        if seed_host.split('.')[0] in node_bases:
+                            is_seed = True
                             break
+
+            if is_seed:
+                seeds_per_dc[dc] += 1
         
         # Now check if each DC has adequate seeds
         for dc, nodes in datacenter_nodes.items():
@@ -471,66 +527,84 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
         recommendations = []
         
         for node in cluster_state.nodes.values():
-            # Check streaming throughput
-            throughput = node.Details.get("comp_stream_throughput_outbound_megabits_per_sec", 200)
-            timeout = node.Details.get("comp_streaming_socket_timeout_in_ms", 86400000)
-            
-            try:
-                throughput_val = int(throughput)
-                timeout_val = int(timeout)
-                
-                # Recommend keeping defaults unless there's a specific reason
-                if throughput_val != 200:
+            is_5x = version_at_least(node_version(node), V5_0)
+
+            # streaming_socket_timeout_in_ms (4.x) → streaming_socket_timeout (5.x duration).
+            timeout_val = self._get_duration_ms(node, "streaming_socket_timeout")
+            if timeout_val is None:
+                timeout_val = 86400000
+            timeout_setting_name = "streaming_socket_timeout" if is_5x else "streaming_socket_timeout_in_ms"
+
+            # 4.x: stream_throughput_outbound_megabits_per_sec (megabits/sec, default 200).
+            # 5.x: stream_throughput_outbound (data-rate string, default 24MiB/s).
+            # Read both and normalise to bytes-per-second so we can compare a single value.
+            throughput_bps = self._get_rate_bytes_per_sec(
+                node,
+                "stream_throughput_outbound",
+                legacy_suffix="megabits_per_sec",
+                legacy_unit="Mibps",
+            )
+            stream_setting_name = "stream_throughput_outbound" if is_5x else "stream_throughput_outbound_megabits_per_sec"
+
+            # The 4.x and 5.x defaults are nearly equivalent (200 Mibps ≈ 25 MB/s vs
+            # 24 MiB/s ≈ 25.2 MB/s). Use a small tolerance so a node sitting on the
+            # version-appropriate default isn't flagged.
+            if throughput_bps is not None:
+                default_bps = 24 * 1024 * 1024 if is_5x else (200 * 1024 * 1024 / 8)
+                if abs(throughput_bps - default_bps) / default_bps > 0.05:
+                    if is_5x:
+                        current_str = f"{throughput_bps / (1024 * 1024):.1f} MiB/s"
+                        recommended_str = "24MiB/s"
+                    else:
+                        current_str = f"{throughput_bps * 8 / (1024 * 1024):.0f} Mbps"
+                        recommended_str = "200 Mbps"
                     recommendations.append(
                         self._create_recommendation(
-                            title="Non-Default Streaming Throughput (stream_throughput_outbound_megabits_per_sec)",
-                            description=f"Node {self._get_node_identifier(node)} has {throughput_val} Mb/s streaming throughput",
+                            title=f"Non-Default Streaming Throughput ({stream_setting_name})",
+                            description=f"Node {self._get_node_identifier(node)} has {current_str} streaming throughput",
                             severity=Severity.INFO,
                             category="configuration",
                             impact="May affect repair and bootstrap performance",
-                            recommendation="Default 200 Mb/s is usually optimal unless network capacity differs in cassandra.yaml",
-                            current_value=f"stream_throughput_outbound_megabits_per_sec={throughput_val} Mb/s",
+                            recommendation=f"Default {recommended_str} is usually optimal unless network capacity differs in cassandra.yaml",
+                            current_value=f"{stream_setting_name}={current_str}",
                             node_id=node.host_id,
-                            stream_throughput_outbound_megabits_per_sec=throughput_val,
-                            recommended_value="200 Mb/s",
+                            stream_throughput_bytes_per_sec=throughput_bps,
+                            recommended_value=recommended_str,
                             config_location="cassandra.yaml"
                         )
                     )
-                
-                # Check timeout (should be 24 hours = 86400000ms)
-                if timeout_val != 86400000:
-                    recommendations.append(
-                        self._create_recommendation(
-                            title="Non-Default Streaming Timeout (streaming_socket_timeout_in_ms)",
-                            description=f"Node {self._get_node_identifier(node)} has {timeout_val/1000/60/60:.1f} hour timeout",
-                            severity=Severity.INFO,
-                            category="configuration",
-                            impact="May affect long-running streaming operations",
-                            recommendation="Default 24 hour timeout is usually appropriate in cassandra.yaml",
-                            current_value=f"streaming_socket_timeout_in_ms={timeout_val} ms ({timeout_val/1000/60/60:.1f} hours)",
-                            node_id=node.host_id,
-                            streaming_socket_timeout_in_ms=timeout_val,
-                            recommended_value="86400000 ms (24 hours)",
-                            config_location="cassandra.yaml"
-                        )
+
+            # Check timeout (should be 24 hours = 86400000ms)
+            if timeout_val != 86400000:
+                recommendations.append(
+                    self._create_recommendation(
+                        title=f"Non-Default Streaming Timeout ({timeout_setting_name})",
+                        description=f"Node {self._get_node_identifier(node)} has {timeout_val/1000/60/60:.1f} hour timeout",
+                        severity=Severity.INFO,
+                        category="configuration",
+                        impact="May affect long-running streaming operations",
+                        recommendation="Default 24 hour timeout is usually appropriate in cassandra.yaml",
+                        current_value=f"{timeout_setting_name}={timeout_val} ms ({timeout_val/1000/60/60:.1f} hours)",
+                        node_id=node.host_id,
+                        streaming_socket_timeout_in_ms=timeout_val,
+                        recommended_value="86400000 ms (24 hours)" if not is_5x else "24h",
+                        config_location="cassandra.yaml"
                     )
-                
-            except (ValueError, TypeError):
-                pass
-        
+                )
+
         return recommendations
     
     def _analyze_version_consistency(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze Cassandra version consistency and support status"""
         recommendations = []
-        
+
         versions = {}
         for node in cluster_state.nodes.values():
             version = node.Details.get("comp_cassandra_version", "unknown")
             if version not in versions:
                 versions[version] = []
             versions[version].append(node.host_id)
-        
+
         # Check version consistency
         if len(versions) > 1:
             recommendations.append(
@@ -545,53 +619,72 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     config_location="cassandra.yaml"
                 )
             )
-        
-        # Check for unsupported versions
+
+        # Check for unsupported / outdated versions
         for version, nodes in versions.items():
-            if version != "unknown":
-                if self._is_version_unsupported(version):
-                    recommendations.append(
-                        self._create_recommendation(
-                            title=f"Unsupported Cassandra Version: {version}",
-                            description=f"Nodes running unsupported version {version}: {nodes}",
-                            severity=Severity.CRITICAL,
-                            category="configuration",
-                            impact="Security vulnerabilities and lack of support",
-                            recommendation="Upgrade to Cassandra 4.x or latest supported version",
-                            version=version,
-                            affected_nodes=nodes,
-                            config_location="cassandra.yaml"
-                        )
+            if version == "unknown":
+                continue
+            parsed = parse_version(version)
+            if parsed is None:
+                continue
+            if parsed < V4_0:
+                recommendations.append(
+                    self._create_recommendation(
+                        title=f"Unsupported Cassandra Version: {version}",
+                        description=f"Nodes running end-of-life version {version}: {nodes}",
+                        severity=Severity.CRITICAL,
+                        category="configuration",
+                        impact="No upstream patches; security vulnerabilities and lack of community support",
+                        recommendation="Upgrade to Cassandra 4.1.x or 5.x (latest supported release)",
+                        version=version,
+                        affected_nodes=nodes,
+                        config_location="cassandra.yaml"
                     )
-        
+                )
+            elif parsed < V5_0:
+                # 4.0 / 4.1 still supported but Cassandra 5.x brings UCS,
+                # SAI, vector search, trie memtables and other improvements.
+                recommendations.append(
+                    self._create_recommendation(
+                        title=f"Consider Upgrading to Cassandra 5.x: {version}",
+                        description=f"Nodes running Cassandra {version}: {nodes}",
+                        severity=Severity.INFO,
+                        category="configuration",
+                        impact="Missing 5.x features (Unified Compaction Strategy, Storage-Attached Indexes, vector search, trie memtables) and ongoing 5.x bug fixes",
+                        recommendation="Plan an upgrade to Cassandra 5.x once your environment supports it",
+                        version=version,
+                        affected_nodes=nodes,
+                        config_location="cassandra.yaml"
+                    )
+                )
+
         return recommendations
-    
+
     def _supports_offheap_objects(self, version: str) -> bool:
-        """Check if Cassandra version supports offheap_objects"""
-        # Simplified version check - offheap_objects available in 2.1+
-        try:
-            if version and version != "unknown":
-                major_version = float(version.split('.')[0] + '.' + version.split('.')[1])
-                return major_version >= 2.1
-        except (ValueError, IndexError):
-            pass
-        return True  # Default to True if version can't be parsed
+        """Check if Cassandra version supports offheap_objects (2.1+)."""
+        parsed = parse_version(version)
+        if parsed is None:
+            # Default to True if version can't be parsed — preserves prior behaviour.
+            return True
+        return parsed >= (2, 1, 0)
     
-    def _is_version_unsupported(self, version: str) -> bool:
-        """Check if Cassandra version is unsupported"""
-        # Simplified check - versions below 3.0 are generally unsupported
-        try:
-            if version and version != "unknown":
-                major_version = float(version.split('.')[0] + '.' + version.split('.')[1])
-                return major_version < 3.0
-        except (ValueError, IndexError):
-            pass
-        return False  # Default to False if version can't be parsed
-    
+    def _cluster_has_materialized_views(self, cluster_state: ClusterState) -> bool:
+        """Return True if any non-system keyspace defines a materialized view."""
+        for ks_name, keyspace in cluster_state.keyspaces.items():
+            if ks_name in {"system", "system_auth", "system_distributed", "system_schema", "system_traces"}:
+                continue
+            for table in keyspace.tables_dict.values():
+                cql = getattr(table, "CQL", "") or ""
+                if "create materialized view" in cql.lower():
+                    return True
+        return False
+
     def _analyze_thread_pool_settings(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze thread pool settings (concurrent_reads/writes) based on CPU count"""
         recommendations = []
-        
+
+        has_mvs = self._cluster_has_materialized_views(cluster_state)
+
         for node in cluster_state.nodes.values():
             # Get CPU count from host_cpu_CPU (last CPU ID, so add 1 for actual count)
             cpu_count = None
@@ -639,7 +732,7 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                                 category="configuration",
                                 impact="CPU cores are not being fully leveraged for read operations",
                                 recommendation=f"Increase concurrent_reads to {recommended_reads} (16x CPU count) in cassandra.yaml",
-                                current_value=f"concurrent_reads={reads_val}",
+                                current_value=str(reads_val),
                                 node_id=node.host_id,
                                 concurrent_reads=reads_val,
                                 cpu_count=cpu_count,
@@ -656,7 +749,7 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                                 category="configuration",
                                 impact="May not fully utilize available CPU resources for read operations",
                                 recommendation=f"Increase concurrent_reads to {recommended_reads} (16x CPU count) in cassandra.yaml",
-                                current_value=f"concurrent_reads={reads_val}",
+                                current_value=str(reads_val),
                                 node_id=node.host_id,
                                 concurrent_reads=reads_val,
                                 cpu_count=cpu_count,
@@ -685,7 +778,7 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                                 category="configuration",
                                 impact="CPU cores are not being fully leveraged for write operations",
                                 recommendation=f"Increase concurrent_writes to {recommended_writes} (16x CPU count) in cassandra.yaml",
-                                current_value=f"concurrent_writes={writes_val}",
+                                current_value=str(writes_val),
                                 node_id=node.host_id,
                                 concurrent_writes=writes_val,
                                 cpu_count=cpu_count,
@@ -702,7 +795,7 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                                 category="configuration",
                                 impact="May not fully utilize available CPU resources for write operations",
                                 recommendation=f"Increase concurrent_writes to {recommended_writes} (16x CPU count) in cassandra.yaml",
-                                current_value=f"concurrent_writes={writes_val}",
+                                current_value=str(writes_val),
                                 node_id=node.host_id,
                                 concurrent_writes=writes_val,
                                 cpu_count=cpu_count,
@@ -721,20 +814,39 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                     writes_val = int(concurrent_writes) if concurrent_writes else 32
                     counter_writes_val = int(concurrent_counter_writes) if concurrent_counter_writes else 32
                     mv_writes_val = int(concurrent_materialized_view_writes) if concurrent_materialized_view_writes else 32
-                    
+
                     # Calculate RECOMMENDED values for concurrent operations
                     recommended_reads = 16 * cpu_count  # As per user requirement
                     recommended_writes = 16 * cpu_count  # As per user requirement
                     recommended_counter_writes = 16 * cpu_count  # Same as writes
-                    recommended_mv_writes = 32  # Keep default for MV writes
-                    
+
+                    # Materialized view writes are only relevant if the cluster actually
+                    # uses MVs. Including a phantom 32 for clusters with no views inflates
+                    # the native_transport_max_threads target unnecessarily.
+                    if has_mvs:
+                        recommended_mv_writes = 32
+                        sum_formula = "concurrent_reads + concurrent_writes + concurrent_counter_writes + concurrent_materialized_view_writes"
+                    else:
+                        recommended_mv_writes = 0
+                        sum_formula = "concurrent_reads + concurrent_writes + concurrent_counter_writes"
+
                     # Calculate recommended native_transport_max_threads
-                    # Should be sum of all RECOMMENDED concurrent operations
                     recommended_native_threads = recommended_reads + recommended_writes + recommended_counter_writes + recommended_mv_writes
-                    
+
                     native_threads_val = int(native_transport_max_threads)
-                    
+
                     if native_threads_val < recommended_native_threads:
+                        ctx = {
+                            "node_id": node.host_id,
+                            "native_transport_max_threads": native_threads_val,
+                            "concurrent_reads": reads_val,
+                            "concurrent_writes": writes_val,
+                            "concurrent_counter_writes": counter_writes_val,
+                            "recommended_value": f"{recommended_native_threads}",
+                            "config_location": "cassandra.yaml",
+                        }
+                        if has_mvs:
+                            ctx["concurrent_materialized_view_writes"] = mv_writes_val
                         recommendations.append(
                             self._create_recommendation(
                                 title="Low Native Transport Max Threads (native_transport_max_threads)",
@@ -742,16 +854,9 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
                                 severity=Severity.WARNING,
                                 category="configuration",
                                 impact="May limit concurrent client operations and cause thread pool saturation",
-                                recommendation=f"Increase native_transport_max_threads to {recommended_native_threads} (sum of concurrent_reads + concurrent_writes + concurrent_counter_writes + concurrent_materialized_view_writes) in cassandra.yaml",
-                                current_value=f"native_transport_max_threads={native_threads_val}",
-                                node_id=node.host_id,
-                                native_transport_max_threads=native_threads_val,
-                                concurrent_reads=reads_val,
-                                concurrent_writes=writes_val,
-                                concurrent_counter_writes=counter_writes_val,
-                                concurrent_materialized_view_writes=mv_writes_val,
-                                recommended_value=f"{recommended_native_threads}",
-                                config_location="cassandra.yaml"
+                                recommendation=f"Increase native_transport_max_threads to {recommended_native_threads} (sum of {sum_formula}) in cassandra.yaml",
+                                current_value=str(native_threads_val),
+                                **ctx,
                             )
                         )
                 except (ValueError, TypeError):

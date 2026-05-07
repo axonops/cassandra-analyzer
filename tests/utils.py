@@ -114,6 +114,10 @@ def create_cluster_state(
     for i in range(1, num_nodes + 1):
         status = "DN" if i <= unhealthy_nodes else "UN"
         node = create_node_info(f"node{i}", status=status)
+        # Propagate the requested Cassandra version so analyzers that
+        # branch on it (UCS / SAI / MV / JVM) see a consistent cluster.
+        node.Details["comp_releaseVersion"] = version
+        node.Details["comp_cassandra_version"] = version
         nodes[node.host_id] = node
 
     return ClusterState(name="test-cluster", cluster_type="cassandra", nodes=nodes)
