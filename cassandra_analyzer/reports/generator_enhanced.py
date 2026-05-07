@@ -186,13 +186,18 @@ class EnhancedReportGenerator:
             "## How to read this report\n\n"
             "This report is the contract between cassandra-analyzer and any downstream\n"
             "consumer (human reviewer or LLM agent). Interpret it as follows:\n\n"
+            "- **The Coverage Manifest (appendix) is authoritative for what was\n"
+            "  checked.** Every check this tool considered appears there with one of\n"
+            "  four statuses. Treat the manifest as the complete inventory of work\n"
+            "  already done — if a check is listed, you do not need to redo it.\n"
             "- **Findings** under each section are issues the tool detected. Severity\n"
             "  (CRITICAL / WARNING / INFO) is authoritative — use it verbatim. Each\n"
             "  finding maps to a stable `id` listed in the Coverage Manifest.\n"
-            "- **Coverage Manifest** (appendix) lists every check the tool considered,\n"
-            "  in one of four states:\n"
+            "- Coverage Manifest statuses:\n"
             "  - `pass` — check ran cleanly, the cluster meets expectations on this\n"
-            "    point. Do NOT re-query or re-investigate.\n"
+            "    point. Do NOT re-query, re-investigate, or flag as a gap. The\n"
+            "    `Source / Reason` column shows where the data came from if you\n"
+            "    need to cite it.\n"
             "  - `fail` — check ran and produced a finding above. Cross-reference by\n"
             "    `id`. Do NOT re-derive.\n"
             "  - `skipped` — a precondition was not met (e.g. single-node cluster).\n"
@@ -201,6 +206,9 @@ class EnhancedReportGenerator:
             "    data source returned nothing. **This area is not yet evaluated.** If\n"
             "    it is in scope for your output, query the source listed in the\n"
             "    manifest yourself.\n"
+            "- Anything not represented in the Coverage Manifest is genuinely outside\n"
+            "  this tool's scope — flag it as such if your output requires it, rather\n"
+            "  than re-checking items already marked `pass`.\n"
             "- The richer machine-readable JSON sibling of this file (same basename,\n"
             "  `.json`) carries the same content with full per-check `data_source`\n"
             "  strings and `recommendation_id` cross-references.\n"
@@ -318,7 +326,6 @@ class EnhancedReportGenerator:
         )
         lines.append("")
 
-        lines.append("<details><summary>Checks by section</summary>\n")
         for section_name, section in analysis_results.items():
             checks = section.get("checks") or []
             if not checks:
@@ -339,7 +346,6 @@ class EnhancedReportGenerator:
                     last = (check.get("data_source") or "").replace("|", "\\|")
                 lines.append(f"| `{cid}` | {status_str} | {desc} | {last} |")
             lines.append("")
-        lines.append("</details>")
         return "\n".join(lines)
     
     def _generate_json(self, report_data: Dict[str, Any], output_path: Path):
