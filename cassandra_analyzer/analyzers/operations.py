@@ -10,36 +10,68 @@ from ..utils.gc_metric_selector import GCMetricSelector
 
 class OperationsAnalyzer(BaseAnalyzer):
     """Analyzes operational aspects of the cluster"""
-    
+
+    category = "operations"
+
+    _SECTION_CHECKS = {
+        "_analyze_dropped_messages": (
+            "ops.dropped_messages",
+            "No message types are being dropped above threshold",
+            "metrics.dropped_*",
+        ),
+        "_analyze_gc_performance": (
+            "ops.gc",
+            "GC pause times are within healthy bounds",
+            "metrics.cas_jvm_GC* + comp_jvm_input arguments",
+        ),
+        "_analyze_compactions": (
+            "ops.compactions",
+            "Compaction backlog is within bounds and pending tasks low",
+            "metrics.cas_Compaction_PendingTasks*",
+        ),
+        "_analyze_thread_pools": (
+            "ops.thread_pools",
+            "Thread pool active/pending counts indicate no saturation",
+            "metrics.cas_ThreadPools_*",
+        ),
+    }
+
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze operational health"""
+        self._reset_checks()
         recommendations = []
-        summary = {}
         details = {}
-        
-        # Analyze dropped messages
-        recommendations.extend(self._analyze_dropped_messages(cluster_state))
-        
-        # Analyze GC performance
-        recommendations.extend(self._analyze_gc_performance(cluster_state))
-        
-        # Analyze compactions
-        recommendations.extend(self._analyze_compactions(cluster_state))
-        
-        # Analyze thread pools
-        recommendations.extend(self._analyze_thread_pools(cluster_state))
-        
-        # Create summary
+
+        section_helpers = [
+            self._analyze_dropped_messages,
+            self._analyze_gc_performance,
+            self._analyze_compactions,
+            self._analyze_thread_pools,
+        ]
+        for helper in section_helpers:
+            section_recs = helper(cluster_state)
+            recommendations.extend(section_recs)
+            check_id, description, data_source = self._SECTION_CHECKS[helper.__name__]
+            for rec in section_recs:
+                if rec.id is None:
+                    rec.id = check_id
+            self._record_check(
+                check_id, description, data_source,
+                "fail" if section_recs else "pass",
+                finding_count=len(section_recs),
+            )
+
         summary = {
             "recommendations_count": len(recommendations),
             "critical_issues": sum(1 for r in recommendations if r.severity == Severity.CRITICAL),
-            "warnings": sum(1 for r in recommendations if r.severity == Severity.WARNING)
+            "warnings": sum(1 for r in recommendations if r.severity == Severity.WARNING),
         }
-        
+
         return {
             "recommendations": [r.dict() for r in recommendations],
             "summary": summary,
-            "details": details
+            "details": details,
+            "checks": [c.model_dump() for c in self._checks],
         }
     
     def _analyze_dropped_messages(self, cluster_state: ClusterState) -> List[Recommendation]:

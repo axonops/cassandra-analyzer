@@ -11,9 +11,60 @@ from .base import BaseAnalyzer
 from .table_analyzer import TableAnalyzer
 
 
+_DATAMODEL_SECTION_CHECKS = {
+    "_analyze_replication": (
+        "schema.replication",
+        "Keyspaces use NetworkTopologyStrategy with adequate RF",
+        "schema.keyspaces",
+    ),
+    "_analyze_table_performance": (
+        "schema.table_performance",
+        "Per-table read/write metrics indicate no hotspots or wide-row issues",
+        "metrics.cas_Table_*",
+    ),
+    "_analyze_bloom_filters": (
+        "schema.bloom_filters",
+        "Bloom filter false-positive rates are within healthy bounds",
+        "metrics.cas_Table_BloomFilter*",
+    ),
+    "_analyze_compression": (
+        "schema.compression",
+        "Tables use compression appropriate for their access pattern",
+        "schema.tables.compression",
+    ),
+    "_analyze_compaction_strategies": (
+        "schema.compaction_strategy",
+        "Tables use a compaction strategy appropriate for their workload",
+        "schema.tables.compaction",
+    ),
+    "_analyze_secondary_indexes": (
+        "schema.secondary_indexes",
+        "No problematic / wide-cardinality secondary indexes",
+        "schema.tables.cql",
+    ),
+    "_analyze_collection_types": (
+        "schema.collections",
+        "Collection columns are sized within recommended bounds",
+        "schema.tables.cql",
+    ),
+    "_analyze_materialized_views": (
+        "schema.materialized_views",
+        "Materialized views are absent or appropriate for the workload",
+        "schema.tables.materialized_views",
+    ),
+    "_analyze_unused_tables": (
+        "schema.unused_tables",
+        "All user tables show recent read/write activity",
+        "metrics.cas_Table_*Latency",
+    ),
+}
+
+
 class DataModelAnalyzer(BaseAnalyzer):
     """Analyzes data model and schema design"""
-    
+
+    category = "schema"
+
     def _format_cql_schema(self, cql: str) -> str:
         """Format CQL schema for better readability"""
         # First, unescape HTML entities
@@ -126,57 +177,75 @@ class DataModelAnalyzer(BaseAnalyzer):
     
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze data model"""
+        self._reset_checks()
         recommendations = []
-        summary = {}
         details = {}
-        
-        # Analyze replication settings
-        recommendations.extend(self._analyze_replication(cluster_state))
-        
-        # Analyze table performance metrics
-        recommendations.extend(self._analyze_table_performance(cluster_state))
-        
-        # Analyze bloom filter performance
-        recommendations.extend(self._analyze_bloom_filters(cluster_state))
-        
-        # Analyze compression effectiveness
-        recommendations.extend(self._analyze_compression(cluster_state))
-        
-        # Analyze compaction strategies
-        recommendations.extend(self._analyze_compaction_strategies(cluster_state))
-        
-        # Analyze secondary indexes
-        recommendations.extend(self._analyze_secondary_indexes(cluster_state))
-        
-        # Analyze collection types
-        recommendations.extend(self._analyze_collection_types(cluster_state))
-        
-        # Analyze materialized views
-        recommendations.extend(self._analyze_materialized_views(cluster_state))
-        
+
+        section_helpers = [
+            self._analyze_replication,
+            self._analyze_table_performance,
+            self._analyze_bloom_filters,
+            self._analyze_compression,
+            self._analyze_compaction_strategies,
+            self._analyze_secondary_indexes,
+            self._analyze_collection_types,
+            self._analyze_materialized_views,
+        ]
+        for helper in section_helpers:
+            section_recs = helper(cluster_state)
+            recommendations.extend(section_recs)
+            check_id, description, data_source = _DATAMODEL_SECTION_CHECKS[helper.__name__]
+            for rec in section_recs:
+                if rec.id is None:
+                    rec.id = check_id
+            self._record_check(
+                check_id, description, data_source,
+                "fail" if section_recs else "pass",
+                finding_count=len(section_recs),
+            )
+
         # Comprehensive table analysis
         table_analyzer = TableAnalyzer(self.config)
         table_results = table_analyzer.analyze(cluster_state)
-        recommendations.extend([
-            Recommendation(**rec) for rec in table_results["recommendations"]
-        ])
-        
+        table_recs = [Recommendation(**rec) for rec in table_results["recommendations"]]
+        recommendations.extend(table_recs)
+        for rec in table_recs:
+            if rec.id is None:
+                rec.id = "schema.table_design"
+        self._record_check(
+            "schema.table_design",
+            "Per-table CQL design (PK shape, types, options) follows best practices",
+            "schema.tables",
+            "fail" if table_recs else "pass",
+            finding_count=len(table_recs),
+        )
+
         # Analyze unused tables
-        recommendations.extend(self._analyze_unused_tables(cluster_state))
-        
-        # Create summary
+        unused_recs = self._analyze_unused_tables(cluster_state)
+        recommendations.extend(unused_recs)
+        check_id, description, data_source = _DATAMODEL_SECTION_CHECKS["_analyze_unused_tables"]
+        for rec in unused_recs:
+            if rec.id is None:
+                rec.id = check_id
+        self._record_check(
+            check_id, description, data_source,
+            "fail" if unused_recs else "pass",
+            finding_count=len(unused_recs),
+        )
+
         total_tables = sum(len(ks.Tables) for ks in cluster_state.keyspaces.values())
         summary = {
             "total_keyspaces": len(cluster_state.keyspaces),
             "total_tables": total_tables,
             "table_analysis": table_results["summary"],
-            "recommendations_count": len(recommendations)
+            "recommendations_count": len(recommendations),
         }
-        
+
         return {
             "recommendations": [r.dict() for r in recommendations],
             "summary": summary,
-            "details": details
+            "details": details,
+            "checks": [c.model_dump() for c in self._checks],
         }
     
     def _analyze_replication(self, cluster_state: ClusterState) -> List[Recommendation]:

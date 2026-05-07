@@ -39,23 +39,31 @@ class EnhancedReportGenerator:
         self.env.filters['severity_text'] = self._severity_text
         self.env.filters['get_attr'] = self._get_attr
     
-    def generate(self, report_data: Dict[str, Any], generate_pdf: bool = False) -> Path:
+    def generate(
+        self,
+        report_data: Dict[str, Any],
+        generate_pdf: bool = False,
+        for_agent: bool = False,
+    ) -> Path:
         """Generate the analysis report
-        
+
         Args:
             report_data: The analysis data
             generate_pdf: Whether to also generate a PDF version
-            
+            for_agent: When True, append the Coverage Manifest + reading
+                guide to the markdown report. The JSON sibling always
+                contains the manifest data.
+
         Returns:
             Path to the generated markdown report
         """
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         cluster_name = report_data["cluster_info"]["cluster_name"]
-        
+
         # Generate enhanced markdown report
         md_path = self.output_dir / f"cassandra_analysis_{cluster_name}_{timestamp}.md"
-        self._generate_enhanced_markdown(report_data, md_path)
-        
+        self._generate_enhanced_markdown(report_data, md_path, for_agent=for_agent)
+
         # Generate JSON report for programmatic access
         json_path = self.output_dir / f"cassandra_analysis_{cluster_name}_{timestamp}.json"
         self._generate_json(report_data, json_path)
@@ -75,26 +83,31 @@ class EnhancedReportGenerator:
         
         return md_path
     
-    def _generate_enhanced_markdown(self, report_data: Dict[str, Any], output_path: Path):
+    def _generate_enhanced_markdown(
+        self,
+        report_data: Dict[str, Any],
+        output_path: Path,
+        for_agent: bool = False,
+    ):
         """Generate enhanced markdown report"""
         # Aggregate recommendations to avoid repetition
         aggregated_results = {}
         node_details = {}  # Store node-specific details for appendix
-        
+
         for section_name, section_data in report_data["analysis_results"].items():
             if section_data.get("error"):
                 aggregated_results[section_name] = section_data
                 continue
-            
+
             recommendations = section_data.get("recommendations", [])
             aggregated_recs = self._aggregate_recommendations(recommendations)
-            
-            # Store aggregated recommendations
+
+            # Store aggregated recommendations (preserve checks for the manifest)
             aggregated_results[section_name] = {
                 **section_data,
-                "recommendations": aggregated_recs
+                "recommendations": aggregated_recs,
             }
-            
+
             # Collect node details for appendix
             for agg_rec in aggregated_recs:
                 if agg_rec.get("affected_nodes"):
@@ -102,15 +115,22 @@ class EnhancedReportGenerator:
                     node_details[issue_key] = {
                         "section": section_name,
                         "title": agg_rec["title"],
-                        "affected_nodes": agg_rec["affected_nodes"]
+                        "affected_nodes": agg_rec["affected_nodes"],
                     }
-        
+
         # Process recommendations to group by priority
         recommendations_by_priority = self._group_recommendations_by_priority(aggregated_results)
-        
+
         # Calculate statistics
         stats = self._calculate_statistics(report_data)
-        
+
+        # Coverage manifest (only meaningful for the agent format)
+        coverage = self._coverage_summary(aggregated_results)
+        coverage_appendix = (
+            self._render_coverage_appendix(aggregated_results, coverage) if for_agent else ""
+        )
+        agent_preamble = self._render_agent_preamble() if for_agent else ""
+
         # Prepare context for template
         context = {
             "cluster_info": report_data["cluster_info"],
@@ -120,18 +140,102 @@ class EnhancedReportGenerator:
             "recommendations_by_priority": recommendations_by_priority,
             "stats": stats,
             "sections": self._prepare_sections(aggregated_results),
-            "node_details": node_details  # Add node details for appendix
+            "node_details": node_details,
+            "for_agent": for_agent,
+            "coverage": coverage,
+            "agent_preamble": agent_preamble,
+            "coverage_appendix": coverage_appendix,
         }
-        
+
         # Render template
         template = self._get_enhanced_markdown_template()
         content = template.render(**context)
-        
+
         # Clean up multiple consecutive empty lines
         content = self._clean_empty_lines(content)
-        
+
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(content)
+
+    @staticmethod
+    def _coverage_summary(analysis_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Aggregate per-section check totals into a single coverage block."""
+        per_section: Dict[str, Dict[str, int]] = {}
+        totals = {"pass": 0, "fail": 0, "skipped": 0, "no_data": 0}
+        for section_name, section in analysis_results.items():
+            counts = {"pass": 0, "fail": 0, "skipped": 0, "no_data": 0}
+            for check in section.get("checks") or []:
+                status = check.get("status") if isinstance(check, dict) else None
+                if status in counts:
+                    counts[status] += 1
+                    totals[status] += 1
+            per_section[section_name] = counts
+        return {"totals": totals, "by_section": per_section}
+
+    @staticmethod
+    def _render_agent_preamble() -> str:
+        return (
+            "## How to read this report\n\n"
+            "This report is the contract between cassandra-analyzer and any downstream\n"
+            "consumer (human reviewer or LLM agent). Interpret it as follows:\n\n"
+            "- **Findings** under each section are issues the tool detected. Severity\n"
+            "  (CRITICAL / WARNING / INFO) is authoritative — use it verbatim. Each\n"
+            "  finding maps to a stable `id` listed in the Coverage Manifest.\n"
+            "- **Coverage Manifest** (appendix) lists every check the tool considered,\n"
+            "  in one of four states:\n"
+            "  - `pass` — check ran cleanly, the cluster meets expectations on this\n"
+            "    point. Do NOT re-query or re-investigate.\n"
+            "  - `fail` — check ran and produced a finding above. Cross-reference by\n"
+            "    `id`. Do NOT re-derive.\n"
+            "  - `skipped` — a precondition was not met (e.g. single-node cluster).\n"
+            "    The check does not apply. Do not surface as an issue.\n"
+            "  - `no_data` — the tool would have run this check but the required\n"
+            "    data source returned nothing. **This area is not yet evaluated.** If\n"
+            "    it is in scope for your output, query the source listed in the\n"
+            "    manifest yourself.\n"
+            "- The richer machine-readable JSON sibling of this file (same basename,\n"
+            "  `.json`) carries the same content with full per-check `data_source`\n"
+            "  strings and `recommendation_id` cross-references.\n"
+        )
+
+    def _render_coverage_appendix(
+        self, analysis_results: Dict[str, Any], coverage: Dict[str, Any],
+    ) -> str:
+        """Render the Coverage Manifest appendix as markdown."""
+        lines = ["## Coverage Manifest", ""]
+        lines.append(
+            "_What this tool checked, so downstream consumers know what they can trust "
+            "and what they still need to query._"
+        )
+        lines.append("")
+        totals = coverage["totals"]
+        lines.append(
+            f"**Totals:** {totals['pass']} pass, {totals['fail']} fail, "
+            f"{totals['skipped']} skipped, {totals['no_data']} no_data."
+        )
+        lines.append("")
+
+        lines.append("<details><summary>Checks by section</summary>\n")
+        for section_name, section in analysis_results.items():
+            checks = section.get("checks") or []
+            if not checks:
+                continue
+            lines.append(f"### {section_name.replace('_', ' ').title()}")
+            lines.append("")
+            lines.append("| ID | Status | Description | Source / Reason |")
+            lines.append("| --- | --- | --- | --- |")
+            for check in checks:
+                cid = check.get("id", "")
+                status = check.get("status", "")
+                desc = (check.get("description") or "").replace("|", "\\|")
+                if status in {"skipped", "no_data"}:
+                    last = (check.get("skipped_reason") or "").replace("|", "\\|")
+                else:
+                    last = (check.get("data_source") or "").replace("|", "\\|")
+                lines.append(f"| `{cid}` | {status} | {desc} | {last} |")
+            lines.append("")
+        lines.append("</details>")
+        return "\n".join(lines)
     
     def _generate_json(self, report_data: Dict[str, Any], output_path: Path):
         """Generate JSON report"""
@@ -496,12 +600,15 @@ class EnhancedReportGenerator:
         return self.env.from_string("""
 # Cassandra Cluster Health Assessment
 
-**Cluster:** {{ cluster_info.cluster_name }}  
-**Organization:** {{ cluster_info.organization }}  
+**Cluster:** {{ cluster_info.cluster_name }}
+**Organization:** {{ cluster_info.organization }}
 **Generated:** {{ generation_time }}
 
 ---
-
+{% if for_agent %}
+{{ agent_preamble }}
+---
+{% endif %}
 ## Executive Summary
 
 {% if stats.critical_count > 0 %}
@@ -1121,7 +1228,11 @@ The following configuration parameters have different values across nodes:
 - Caused by heap pressure or poor tuning
 
 ---
+{% if for_agent %}
+{{ coverage_appendix }}
 
-_Report generated by Cassandra AxonOps Analyzer v1.0_  
+---
+{% endif %}
+_Report generated by Cassandra AxonOps Analyzer v1.0_
 _Analysis completed in {{ cluster_state.collection_duration_seconds | round(2) if cluster_state.collection_duration_seconds else 'N/A' }} seconds_
 """)

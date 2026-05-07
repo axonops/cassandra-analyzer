@@ -14,7 +14,59 @@ logger = structlog.get_logger()
 
 class ExtendedConfigurationAnalyzer(BaseAnalyzer):
     """Extended configuration analyzer implementing additional checks"""
-    
+
+    category = "configuration"
+
+    # Section-level Check IDs each helper records via _record_section_outcome.
+    # Keyed by helper method name → (check_id, description, data_source).
+    _SECTION_CHECKS = {
+        "_analyze_compaction_settings": (
+            "config.compaction.throughput",
+            "Compaction throughput is within recommended bounds for concurrent_compactors",
+            "comp_compaction_throughput*",
+        ),
+        "_analyze_disk_failure_policy": (
+            "config.cassandra.disk_failure_policy_ext",
+            "disk_failure_policy is consistent and not 'best_effort' / 'die'",
+            "comp_disk_failure_policy",
+        ),
+        "_analyze_memtable_settings": (
+            "config.memtable",
+            "Memtable allocation type and flush_writers are tuned correctly",
+            "comp_memtable_allocation_type + comp_memtable_flush_writers",
+        ),
+        "_analyze_snitch_configuration": (
+            "config.snitch",
+            "endpoint_snitch is appropriate for the deployment",
+            "comp_endpoint_snitch",
+        ),
+        "_analyze_seeds_configuration": (
+            "config.seeds",
+            "Seed list is consistent, resolvable, and adequate per DC",
+            "comp_seed_provider*",
+        ),
+        "_analyze_streaming_settings": (
+            "config.streaming",
+            "Streaming throughput and timeouts are at recommended values",
+            "comp_stream_throughput* + comp_streaming_socket_timeout_in_ms",
+        ),
+        "_analyze_version_consistency": (
+            "config.version",
+            "Cassandra versions are uniform and supported",
+            "comp_releaseVersion",
+        ),
+        "_analyze_thread_pool_settings": (
+            "config.threadpool",
+            "concurrent_reads / concurrent_writes / native_transport_max_threads match CPU sizing",
+            "comp_concurrent_* + host_CPU_*",
+        ),
+        "_analyze_auth_cache_settings": (
+            "config.auth_cache",
+            "Authentication cache validity / update intervals are tuned",
+            "comp_*_validity_in_ms + comp_*_update_interval_in_ms",
+        ),
+    }
+
     def _get_node_identifier(self, node) -> str:
         """Get a human-readable node identifier in hostname/ipaddress format"""
         hostname = node.Details.get("host_Hostname", "unknown")
@@ -23,47 +75,44 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
     
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze extended configuration settings"""
+        self._reset_checks()
         recommendations = []
-        summary = {}
         details = {}
-        
-        # Compaction settings analysis
-        recommendations.extend(self._analyze_compaction_settings(cluster_state))
-        
-        # Disk failure policy analysis
-        recommendations.extend(self._analyze_disk_failure_policy(cluster_state))
-        
-        # Memtable storage analysis
-        recommendations.extend(self._analyze_memtable_settings(cluster_state))
-        
-        # Snitch configuration analysis
-        recommendations.extend(self._analyze_snitch_configuration(cluster_state))
-        
-        # Seeds configuration analysis
-        recommendations.extend(self._analyze_seeds_configuration(cluster_state))
-        
-        # Streaming settings analysis
-        recommendations.extend(self._analyze_streaming_settings(cluster_state))
-        
-        # Version analysis
-        recommendations.extend(self._analyze_version_consistency(cluster_state))
-        
-        # Thread pool settings analysis (concurrent_reads/writes)
-        recommendations.extend(self._analyze_thread_pool_settings(cluster_state))
-        
-        # Authentication cache settings analysis
-        recommendations.extend(self._analyze_auth_cache_settings(cluster_state))
-        
-        # Create summary
+
+        section_helpers = [
+            self._analyze_compaction_settings,
+            self._analyze_disk_failure_policy,
+            self._analyze_memtable_settings,
+            self._analyze_snitch_configuration,
+            self._analyze_seeds_configuration,
+            self._analyze_streaming_settings,
+            self._analyze_version_consistency,
+            self._analyze_thread_pool_settings,
+            self._analyze_auth_cache_settings,
+        ]
+        for helper in section_helpers:
+            section_recs = helper(cluster_state)
+            recommendations.extend(section_recs)
+            check_id, description, data_source = self._SECTION_CHECKS[helper.__name__]
+            for rec in section_recs:
+                if rec.id is None:
+                    rec.id = check_id
+            self._record_check(
+                check_id, description, data_source,
+                "fail" if section_recs else "pass",
+                finding_count=len(section_recs),
+            )
+
         summary = {
             "recommendations_count": len(recommendations),
-            "extended_checks_performed": 9
+            "extended_checks_performed": 9,
         }
-        
+
         return {
             "recommendations": [r.dict() for r in recommendations],
             "summary": summary,
-            "details": details
+            "details": details,
+            "checks": [c.model_dump() for c in self._checks],
         }
     
     def _analyze_compaction_settings(self, cluster_state: ClusterState) -> List[Recommendation]:
