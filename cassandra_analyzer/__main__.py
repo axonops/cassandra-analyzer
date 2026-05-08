@@ -3,6 +3,7 @@ Command-line interface for Cassandra AxonOps Analyzer
 """
 
 import logging
+import sys
 from datetime import datetime, UTC, timedelta
 from pathlib import Path
 
@@ -22,24 +23,36 @@ logger = structlog.get_logger()
 @click.option("--output-dir", default="./reports", help="Output directory for reports")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
 @click.option("--pdf", is_flag=True, help="Also generate PDF report (requires WeasyPrint, not available in executables)")
-def main(config, output_dir, verbose, pdf):
+@click.option(
+    "--stdout-format",
+    type=click.Choice(["markdown", "json", "agent", "none"]),
+    default="none",
+    help=(
+        "What to emit on stdout after the run. 'none' (default) keeps stdout "
+        "silent — only the report file is written. 'markdown' prints the "
+        "human report; 'json' prints the structured JSON payload; 'agent' "
+        "prints the markdown report enriched with the agent-consumer "
+        "contract (reading guide + Coverage Manifest appendix) so an LLM "
+        "agent capturing stdout can act on it without an external prompt. "
+        "Logs and progress always go to stderr."
+    ),
+)
+def main(config, output_dir, verbose, pdf, stdout_format):
     """
     Analyze a Cassandra cluster using AxonOps API data
     """
-    # Configure logging
-    use_color = True  # Enable colored output
-    
+    # Send all logs to stderr so stdout stays reserved for the report payload.
     if verbose:
         log_level = logging.DEBUG
     else:
         log_level = logging.INFO
-        
+
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)s [%(levelname)s] %(name)s - %(message)s'
+        format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
+        stream=sys.stderr,
     )
-    
-    # Configure structlog
+
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
@@ -49,7 +62,7 @@ def main(config, output_dir, verbose, pdf):
             structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
-            structlog.dev.ConsoleRenderer(colors=use_color)
+            structlog.dev.ConsoleRenderer(colors=True),
         ],
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -58,7 +71,7 @@ def main(config, output_dir, verbose, pdf):
     )
 
     # Load configuration
-    click.echo(f"Loading configuration from: {config}")
+    click.echo(f"Loading configuration from: {config}", err=True)
     with open(config, 'r') as f:
         config_data = yaml.safe_load(f)
 
@@ -115,22 +128,39 @@ def main(config, output_dir, verbose, pdf):
     )
 
     # Run analysis
-    click.echo(f"Starting analysis for cluster {analyzer_config.cluster.cluster} in organization {analyzer_config.cluster.org}")
-    click.echo(f"Time range: {start_dt} to {end_dt} ({hours} hours)")
-    click.echo(f"Cluster type: {analyzer_config.cluster.cluster_type}")
-    click.echo(f"API URL: {analyzer_config.axonops.api_url}")
+    click.echo(
+        f"Starting analysis for cluster {analyzer_config.cluster.cluster} "
+        f"in organization {analyzer_config.cluster.org}",
+        err=True,
+    )
+    click.echo(f"Time range: {start_dt} to {end_dt} ({hours} hours)", err=True)
+    click.echo(f"Cluster type: {analyzer_config.cluster.cluster_type}", err=True)
+    click.echo(f"API URL: {analyzer_config.axonops.api_url}", err=True)
 
+    for_agent = stdout_format == "agent"
     try:
-        report_path = analyzer.analyze(generate_pdf=pdf)
-        click.echo(f"Analysis complete! Report saved to: {report_path}")
+        report_path = analyzer.analyze(generate_pdf=pdf, for_agent=for_agent)
+        click.echo(f"Analysis complete! Report saved to: {report_path}", err=True)
         if pdf:
             pdf_path = report_path.with_suffix('.pdf')
             if pdf_path.exists():
-                click.echo(f"PDF report saved to: {pdf_path}")
+                click.echo(f"PDF report saved to: {pdf_path}", err=True)
     except Exception as e:
         logger.error("Analysis failed", error=str(e))
         click.echo(f"Error: {e}", err=True)
         raise click.ClickException(str(e))
+
+    # Emit the requested payload on stdout so wrappers that capture stdout
+    # get the actual analysis instead of progress noise.
+    if stdout_format in ("markdown", "agent"):
+        click.echo(report_path.read_text())
+    elif stdout_format == "json":
+        json_path = report_path.with_suffix(".json")
+        if json_path.exists():
+            click.echo(json_path.read_text())
+        else:
+            click.echo(f"Error: JSON report not found at {json_path}", err=True)
+            raise click.ClickException("JSON report missing")
 
 
 if __name__ == "__main__":

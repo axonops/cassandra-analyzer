@@ -52,7 +52,9 @@ def _detect_java_major(node) -> Optional[int]:
 
 class ConfigurationAnalyzer(BaseAnalyzer):
     """Analyzes configuration aspects of the cluster"""
-    
+
+    category = "configuration"
+
     def _get_node_identifier(self, node) -> str:
         """Get a user-friendly node identifier (hostname/ip format)"""
         if not hasattr(node, 'Details') or not node.Details:
@@ -66,31 +68,32 @@ class ConfigurationAnalyzer(BaseAnalyzer):
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze configuration"""
         try:
+            self._reset_checks()
             recommendations = []
-            summary = {}
             details = {}
-            
+
             # Analyze JVM settings
             recommendations.extend(self._analyze_jvm_settings(cluster_state))
-            
+
             # Analyze Cassandra settings
             recommendations.extend(self._analyze_cassandra_settings(cluster_state))
-            
-            # Create summary
+
             summary = {
                 "recommendations_count": len(recommendations)
             }
-            
+
             return {
                 "recommendations": [r.dict() for r in recommendations],
                 "summary": summary,
-                "details": details
+                "details": details,
+                "checks": [c.model_dump() for c in self._checks],
             }
         except Exception as e:
             logger.error(f"Configuration analysis failed: {str(e)}")
             return {
                 "error": f"Configuration analysis failed: {str(e)}",
-                "recommendations": []
+                "recommendations": [],
+                "checks": [c.model_dump() for c in self._checks],
             }
     
     def _analyze_jvm_settings(self, cluster_state: ClusterState) -> List[Recommendation]:
@@ -176,58 +179,110 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     logger.warning(f"Error processing JVM settings for node {self._get_node_identifier(node)}: {str(e)}")
             
             # Check for JVM heap size consistency
-            if heap_sizes and len(set(heap_sizes)) > 1:
+            heap_consistency_rec = None
+            if not heap_sizes:
+                self._record_check(
+                    "config.jvm.heap.consistency",
+                    "All nodes report the same JVM heap size",
+                    "comp_jvm_input arguments",
+                    "no_data",
+                    skipped_reason="no node reported a parseable -Xmx",
+                )
+            elif len(set(heap_sizes)) > 1:
                 heap_variations = {}
                 for config in jvm_configs:
                     if config["heap_size_str"]:
                         if config["heap_size_str"] not in heap_variations:
                             heap_variations[config["heap_size_str"]] = []
                         heap_variations[config["heap_size_str"]].append(config["node"])
-                
-                recommendations.append(
-                    self._create_recommendation(
-                        title="Inconsistent JVM Heap Sizes",
-                        description=f"Found {len(heap_variations)} different heap sizes across nodes: {list(heap_variations.keys())}",
-                        severity=Severity.WARNING,
-                        category="configuration",
-                        impact="Unpredictable performance across nodes",
-                        recommendation="Align JVM heap settings across all nodes for consistent behavior",
-                        heap_variations=heap_variations,
-                        config_location="JVM startup flags"
-                    )
+
+                heap_consistency_rec = self._create_recommendation(
+                    check_id="config.jvm.heap.consistency",
+                    title="Inconsistent JVM Heap Sizes",
+                    description=f"Found {len(heap_variations)} different heap sizes across nodes: {list(heap_variations.keys())}",
+                    severity=Severity.WARNING,
+                    category="configuration",
+                    impact="Unpredictable performance across nodes",
+                    recommendation="Align JVM heap settings across all nodes for consistent behavior",
+                    heap_variations=heap_variations,
+                    config_location="JVM startup flags",
                 )
-            
+                recommendations.append(heap_consistency_rec)
+                self._record_check(
+                    "config.jvm.heap.consistency",
+                    "All nodes report the same JVM heap size",
+                    "comp_jvm_input arguments",
+                    "fail",
+                    recommendation_id=heap_consistency_rec.id,
+                    distinct_sizes=list(heap_variations.keys()),
+                )
+            else:
+                self._record_check(
+                    "config.jvm.heap.consistency",
+                    "All nodes report the same JVM heap size",
+                    "comp_jvm_input arguments",
+                    "pass",
+                )
+
             # Check for GC algorithm consistency
-            if gc_algorithms and len(set(gc_algorithms)) > 1:
+            if not gc_algorithms:
+                self._record_check(
+                    "config.jvm.gc.consistency",
+                    "All nodes use the same GC algorithm",
+                    "comp_jvm_input arguments",
+                    "no_data",
+                    skipped_reason="no node reported a recognised GC algorithm flag",
+                )
+            elif len(set(gc_algorithms)) > 1:
                 gc_variations = {}
                 for config in jvm_configs:
                     gc_algo = config["gc_algorithm"]
                     if gc_algo not in gc_variations:
                         gc_variations[gc_algo] = []
                     gc_variations[gc_algo].append(config["node"])
-                
-                # Create a more detailed description showing which nodes have which GC
+
                 gc_details = []
                 for gc_algo, nodes in gc_variations.items():
                     gc_details.append(f"{gc_algo}: {len(nodes)} nodes")
-                
-                recommendations.append(
-                    self._create_recommendation(
-                        title="Inconsistent GC Algorithms",
-                        description=f"Found {len(gc_variations)} different GC algorithms across nodes: {', '.join(gc_details)}",
-                        severity=Severity.WARNING,
-                        category="configuration",
-                        impact="Different performance characteristics across nodes",
-                        recommendation="Use the same GC algorithm on all nodes",
-                        gc_variations=gc_variations,
-                        gc_algorithms=list(gc_variations.keys()),
-                        config_location="JVM startup flags"
-                    )
+
+                gc_consistency_rec = self._create_recommendation(
+                    check_id="config.jvm.gc.consistency",
+                    title="Inconsistent GC Algorithms",
+                    description=f"Found {len(gc_variations)} different GC algorithms across nodes: {', '.join(gc_details)}",
+                    severity=Severity.WARNING,
+                    category="configuration",
+                    impact="Different performance characteristics across nodes",
+                    recommendation="Use the same GC algorithm on all nodes",
+                    gc_variations=gc_variations,
+                    gc_algorithms=list(gc_variations.keys()),
+                    config_location="JVM startup flags",
+                )
+                recommendations.append(gc_consistency_rec)
+                self._record_check(
+                    "config.jvm.gc.consistency",
+                    "All nodes use the same GC algorithm",
+                    "comp_jvm_input arguments",
+                    "fail",
+                    recommendation_id=gc_consistency_rec.id,
+                    distinct_algorithms=list(gc_variations.keys()),
+                )
+            else:
+                self._record_check(
+                    "config.jvm.gc.consistency",
+                    "All nodes use the same GC algorithm",
+                    "comp_jvm_input arguments",
+                    "pass",
                 )
             
             # Analyze individual node JVM configurations
+            heap_alloc_recs: List[Recommendation] = []
+            gc_algo_recs: List[Recommendation] = []
+            java_version_recs: List[Recommendation] = []
+            jvm_per_node_evaluated = False
+
             for config in jvm_configs:
                 if config["heap_size_bytes"] and config["system_memory_bytes"]:
+                    jvm_per_node_evaluated = True
                     node_recommendations = self._get_jvm_heap_recommendations(
                         config["heap_size_bytes"],
                         config["gc_algorithm"],
@@ -236,13 +291,70 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         java_major=config.get("java_major"),
                         cassandra_version=config.get("cassandra_version"),
                     )
-                    recommendations.extend(node_recommendations)
-            
+                    for r in node_recommendations:
+                        if r.id == "config.jvm.heap.allocation":
+                            heap_alloc_recs.append(r)
+                        elif r.id == "config.jvm.gc.algorithm":
+                            gc_algo_recs.append(r)
+                        elif r.id == "config.jvm.java_version":
+                            java_version_recs.append(r)
+                        recommendations.append(r)
+
+            self._record_jvm_aggregate(
+                "config.jvm.heap.allocation",
+                "Heap is sized 25-50% of system memory and within compressed-OOPs limits",
+                "comp_jvm_input arguments + host_virtualmem_Total",
+                jvm_per_node_evaluated,
+                heap_alloc_recs,
+            )
+            self._record_jvm_aggregate(
+                "config.jvm.gc.algorithm",
+                "GC algorithm is appropriate for the JDK and heap size",
+                "comp_jvm_input arguments",
+                jvm_per_node_evaluated,
+                gc_algo_recs,
+            )
+            self._record_jvm_aggregate(
+                "config.jvm.java_version",
+                "Java major version is appropriate for the Cassandra release",
+                "comp_jvm_version + comp_releaseVersion",
+                jvm_per_node_evaluated,
+                java_version_recs,
+            )
+
             return recommendations
         except Exception as e:
             logger.error(f"JVM settings analysis failed: {str(e)}")
             return []
     
+    def _record_jvm_aggregate(
+        self,
+        check_id: str,
+        description: str,
+        data_source: str,
+        evaluated: bool,
+        recs: List[Recommendation],
+    ) -> None:
+        """Emit a single aggregated Check entry for a per-node JVM check."""
+        if not evaluated:
+            self._record_check(
+                check_id, description, data_source, "no_data",
+                skipped_reason="no node provided both heap and system memory data",
+            )
+        elif recs:
+            # Filter to "fail-shaped" findings — INFO-only positive feedback like
+            # "Shenandoah GC Detected (Recommended)" should still count as a pass.
+            failing = [r for r in recs if r.severity != Severity.INFO or "recommended" not in (r.title or "").lower()]
+            if failing:
+                self._record_check(
+                    check_id, description, data_source, "fail",
+                    affected_count=len(failing),
+                )
+            else:
+                self._record_check(check_id, description, data_source, "pass")
+        else:
+            self._record_check(check_id, description, data_source, "pass")
+
     def _get_jvm_heap_recommendations(
         self,
         heap_size: int,
@@ -268,6 +380,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         if is_5x and java_major is not None and java_major < 17:
             recommendations.append(
                 self._create_recommendation(
+                    check_id="config.jvm.java_version",
                     title=f"Cassandra 5.x Running on Java {java_major}",
                     description=f"Node {node_identifier} runs Cassandra 5.x on Java {java_major}",
                     severity=Severity.INFO,
@@ -292,6 +405,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         if heap_percentage > 60:
             recommendations.append(
                 self._create_recommendation(
+                    check_id="config.jvm.heap.allocation",
                     title="Excessive Heap Allocation",
                     description=f"Node {node_identifier} allocates {heap_percentage:.1f}% of system memory ({heap_gb:.1f}GB of {system_gb:.1f}GB) to heap",
                     severity=Severity.WARNING,
@@ -308,6 +422,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         elif heap_percentage < 20 and system_gb > 32:
             recommendations.append(
                 self._create_recommendation(
+                    check_id="config.jvm.heap.allocation",
                     title="Underutilized Memory for Heap",
                     description=f"Node {node_identifier} only uses {heap_percentage:.1f}% of system memory ({heap_gb:.1f}GB of {system_gb:.1f}GB) for heap",
                     severity=Severity.INFO,
@@ -326,6 +441,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             # CMS is deprecated in Java 9+
             recommendations.append(
                 self._create_recommendation(
+                    check_id="config.jvm.gc.algorithm",
                     title="Deprecated CMS Garbage Collector",
                     description=f"Node {node_identifier} uses CMS GC which is deprecated",
                     severity=Severity.WARNING,
@@ -342,6 +458,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             if heap_gb < 8 and system_gb >= 30:
                 recommendations.append(
                     self._create_recommendation(
+                        check_id="config.jvm.heap.allocation",
                         title="Small Heap Size for Available Memory (CMS)",
                         description=f"Node {node_identifier} has heap size {heap_gb:.1f}GB with {system_gb:.1f}GB RAM available",
                         severity=Severity.WARNING,
@@ -371,7 +488,8 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             if alt_gc_text:
                 recommendations.append(
                     self._create_recommendation(
-                        title=f"Consider {alt_gc_text} Instead of G1GC",
+                        check_id="config.jvm.gc.algorithm",
+                    title=f"Consider {alt_gc_text} Instead of G1GC",
                         description=f"Node {node_identifier} uses G1GC" + (f" on Java {java_major}" if java_major else ""),
                         severity=Severity.INFO,
                         category="configuration",
@@ -393,7 +511,8 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     fallback_advice = "Increase heap size to 20-31GB"
                 recommendations.append(
                     self._create_recommendation(
-                        title="Small Heap Size for G1GC",
+                        check_id="config.jvm.heap.allocation",
+                    title="Small Heap Size for G1GC",
                         description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB but needs at least 20GB",
                         severity=Severity.WARNING,
                         category="configuration",
@@ -415,7 +534,8 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     large_heap_advice = "Decrease heap size to 31GB or consider multiple smaller nodes"
                 recommendations.append(
                     self._create_recommendation(
-                        title="Heap Size Above Compressed OOPs Limit",
+                        check_id="config.jvm.heap.allocation",
+                    title="Heap Size Above Compressed OOPs Limit",
                         description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB, above 32GB compressed OOPs limit",
                         severity=Severity.WARNING,
                         category="configuration",
@@ -432,7 +552,8 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 # This is the sweet spot for G1GC, but we can still provide tuning guidance
                 recommendations.append(
                     self._create_recommendation(
-                        title="G1GC Heap Size Optimal",
+                        check_id="config.jvm.heap.allocation",
+                    title="G1GC Heap Size Optimal",
                         description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB which is in the optimal range",
                         severity=Severity.INFO,
                         category="configuration",
@@ -448,6 +569,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             # Shenandoah is recommended - just provide positive feedback
             recommendations.append(
                 self._create_recommendation(
+                    check_id="config.jvm.gc.algorithm",
                     title="Shenandoah GC Detected (Recommended)",
                     description=f"Node {node_identifier} uses Shenandoah GC for low-latency performance",
                     severity=Severity.INFO,
@@ -464,7 +586,8 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             if heap_percentage > 60:
                 recommendations.append(
                     self._create_recommendation(
-                        title="Excessive Heap Allocation with Shenandoah",
+                        check_id="config.jvm.heap.allocation",
+                    title="Excessive Heap Allocation with Shenandoah",
                         description=f"Node {node_identifier} allocates {heap_percentage:.1f}% of system memory ({heap_gb:.1f}GB of {system_gb:.1f}GB) to heap",
                         severity=Severity.WARNING,
                         category="configuration",
@@ -483,7 +606,8 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 # ZGC matured significantly in Java 17 (production-ready) and Java 21 (generational ZGC).
                 recommendations.append(
                     self._create_recommendation(
-                        title="ZGC Detected (Recommended on Java 17+)",
+                        check_id="config.jvm.gc.algorithm",
+                    title="ZGC Detected (Recommended on Java 17+)",
                         description=f"Node {node_identifier} uses ZGC on Java {java_major}",
                         severity=Severity.INFO,
                         category="configuration",
@@ -499,7 +623,8 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 # On Java 11 ZGC is still experimental; Shenandoah is a safer choice.
                 recommendations.append(
                     self._create_recommendation(
-                        title="ZGC Detected",
+                        check_id="config.jvm.gc.algorithm",
+                    title="ZGC Detected",
                         description=f"Node {node_identifier} uses ZGC" + (f" on Java {java_major}" if java_major else ""),
                         severity=Severity.INFO,
                         category="configuration",
@@ -515,6 +640,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         elif gc_algorithm == "unknown":
             recommendations.append(
                 self._create_recommendation(
+                    check_id="config.jvm.gc.algorithm",
                     title="Unable to Determine GC Algorithm",
                     description=f"Could not determine GC algorithm for node {node_identifier}",
                     severity=Severity.INFO,
@@ -563,10 +689,18 @@ class ConfigurationAnalyzer(BaseAnalyzer):
     def _analyze_configuration_mismatches(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Detect configuration mismatches"""
         recommendations = []
-        
+
         if len(cluster_state.nodes) < 2:
+            self._record_check(
+                "config.consistency.cassandra_yaml",
+                "Cassandra.yaml settings are uniform across nodes",
+                "comp_* (cassandra.yaml inventory)",
+                "skipped",
+                skipped_reason=f"only {len(cluster_state.nodes)} node(s) available — comparison needs ≥2",
+            )
             recommendations.append(
                 self._create_recommendation(
+                    check_id="config.consistency.cassandra_yaml",
                     title="Insufficient Nodes for Configuration Comparison",
                     description="Less than two nodes available for configuration comparison",
                     severity=Severity.WARNING,
@@ -574,7 +708,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     impact="Unable to detect configuration inconsistencies",
                     recommendation="Ensure all nodes provide configuration data",
                     node_count=len(cluster_state.nodes),
-                    config_location="cassandra.yaml"
+                    config_location="cassandra.yaml",
                 )
             )
             return recommendations
@@ -670,6 +804,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 value_list = [config_displays[logical_name][v] for v in values.keys()]
                 recommendations.append(
                     self._create_recommendation(
+                        check_id="config.consistency.cassandra_yaml",
                         title=f"Configuration Mismatch: {logical_name}",
                         description=f"Nodes have different values for {logical_name}: {value_list}",
                         severity=Severity.WARNING,
@@ -679,7 +814,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         config_key=logical_name,
                         values=value_list,
                         affected_nodes=list(values.values()),
-                        config_location="cassandra.yaml"
+                        config_location="cassandra.yaml",
                     )
                 )
                 difference_count += 1
@@ -687,10 +822,11 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     "setting": logical_name,
                     "values": {config_displays[logical_name][v]: nodes for v, nodes in values.items()},
                 })
-        
+
         if difference_count > 0:
             recommendations.append(
                 self._create_recommendation(
+                    check_id="config.consistency.cassandra_yaml",
                     title="Multiple Configuration Mismatches Detected",
                     description=f"Found {difference_count} configuration differences across cluster nodes",
                     severity=Severity.WARNING,
@@ -699,64 +835,136 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     recommendation="Review and align all configuration settings across nodes",
                     mismatch_count=difference_count,
                     mismatches=mismatches,
-                    config_location="cassandra.yaml"
+                    config_location="cassandra.yaml",
                 )
             )
-        
+            self._record_check(
+                "config.consistency.cassandra_yaml",
+                "Cassandra.yaml settings are uniform across nodes",
+                "comp_* (cassandra.yaml inventory)",
+                "fail",
+                mismatch_count=difference_count,
+                mismatched_keys=[m["setting"] for m in mismatches],
+            )
+        else:
+            self._record_check(
+                "config.consistency.cassandra_yaml",
+                "Cassandra.yaml settings are uniform across nodes",
+                "comp_* (cassandra.yaml inventory)",
+                "pass",
+            )
+
         return recommendations
     
     def _analyze_specific_configurations(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze specific configuration settings for best practices"""
         recommendations = []
-        
+
+        disk_policy_seen = False
+        disk_policy_fail: List[str] = []
+        commitlog_seen = False
+        commitlog_fail: List[str] = []
+
         for node in cluster_state.nodes.values():
             if not hasattr(node, 'Details') or not node.Details:
                 continue
-            # Authentication checks are handled by SecurityAnalyzer to avoid duplication
-            # Skip authentication checks here
-            
-            # Check disk failure policy
+            # Authentication checks are handled by SecurityAnalyzer to avoid duplication.
+
             disk_policy = node.Details.get("comp_disk_failure_policy")
-            if disk_policy == "ignore":
-                recommendations.append(
-                    self._create_recommendation(
-                        title="Risky Disk Failure Policy (disk_failure_policy)",
-                        description=f"Disk failure policy is set to 'ignore' on node {self._get_node_identifier(node)}",
-                        severity=Severity.WARNING,
-                        category="configuration",
-                        impact="Data corruption risk if disk failures are ignored",
-                        recommendation="Consider using 'stop' or 'best_effort' policy in cassandra.yaml",
-                        node_id=node.host_id,  # Keep original host_id for reference
-                        node=self._get_node_identifier(node),
-                        current_policy=disk_policy,
-                        config_location="cassandra.yaml"
-                    )
-                )
-            
-            # Check commitlog sync
-            commitlog_sync = node.Details.get("comp_commitlog_sync")
-            if commitlog_sync == "batch":
-                # commitlog_sync_batch_window_in_ms (4.x) → commitlog_sync_batch_window (5.x duration).
-                sync_period = self._get_duration_ms(node, "commitlog_sync_batch_window")
-                is_5x_node = version_at_least(
-                    node.Details.get("comp_releaseVersion") or node.Details.get("release_version"),
-                    V5_0,
-                )
-                setting_name = "commitlog_sync_batch_window" if is_5x_node else "commitlog_sync_batch_window_in_ms"
-                if sync_period is not None and sync_period > 10:
+            if disk_policy is not None:
+                disk_policy_seen = True
+                if disk_policy == "ignore":
+                    disk_policy_fail.append(node.host_id)
                     recommendations.append(
                         self._create_recommendation(
-                            title=f"High Commitlog Sync Window ({setting_name})",
-                            description=f"Commitlog sync window is {sync_period}ms on node {self._get_node_identifier(node)}",
+                            check_id="config.cassandra.disk_failure_policy",
+                            title="Risky Disk Failure Policy (disk_failure_policy)",
+                            description=f"Disk failure policy is set to 'ignore' on node {self._get_node_identifier(node)}",
                             severity=Severity.WARNING,
                             category="configuration",
-                            impact="Potential data loss on failure",
-                            recommendation="Consider reducing sync window or using periodic sync in cassandra.yaml",
-                            node_id=node.host_id,  # Keep original host_id for reference
+                            impact="Data corruption risk if disk failures are ignored",
+                            recommendation="Consider using 'stop' or 'best_effort' policy in cassandra.yaml",
+                            node_id=node.host_id,
                             node=self._get_node_identifier(node),
-                            sync_window_ms=sync_period,
-                            config_location="cassandra.yaml"
+                            current_policy=disk_policy,
+                            config_location="cassandra.yaml",
                         )
                     )
-        
+
+            commitlog_sync = node.Details.get("comp_commitlog_sync")
+            if commitlog_sync is not None:
+                commitlog_seen = True
+                if commitlog_sync == "batch":
+                    sync_period = self._get_duration_ms(node, "commitlog_sync_batch_window")
+                    is_5x_node = version_at_least(
+                        node.Details.get("comp_releaseVersion") or node.Details.get("release_version"),
+                        V5_0,
+                    )
+                    setting_name = "commitlog_sync_batch_window" if is_5x_node else "commitlog_sync_batch_window_in_ms"
+                    if sync_period is not None and sync_period > 10:
+                        commitlog_fail.append(node.host_id)
+                        recommendations.append(
+                            self._create_recommendation(
+                                check_id="config.cassandra.commitlog_sync_batch_window",
+                                title=f"High Commitlog Sync Window ({setting_name})",
+                                description=f"Commitlog sync window is {sync_period}ms on node {self._get_node_identifier(node)}",
+                                severity=Severity.WARNING,
+                                category="configuration",
+                                impact="Potential data loss on failure",
+                                recommendation="Consider reducing sync window or using periodic sync in cassandra.yaml",
+                                node_id=node.host_id,
+                                node=self._get_node_identifier(node),
+                                sync_window_ms=sync_period,
+                                config_location="cassandra.yaml",
+                            )
+                        )
+
+        if not disk_policy_seen:
+            self._record_check(
+                "config.cassandra.disk_failure_policy",
+                "disk_failure_policy is not set to 'ignore'",
+                "comp_disk_failure_policy",
+                "no_data",
+                skipped_reason="comp_disk_failure_policy not reported by any node",
+            )
+        elif disk_policy_fail:
+            self._record_check(
+                "config.cassandra.disk_failure_policy",
+                "disk_failure_policy is not set to 'ignore'",
+                "comp_disk_failure_policy",
+                "fail",
+                affected_nodes=disk_policy_fail,
+            )
+        else:
+            self._record_check(
+                "config.cassandra.disk_failure_policy",
+                "disk_failure_policy is not set to 'ignore'",
+                "comp_disk_failure_policy",
+                "pass",
+            )
+
+        if not commitlog_seen:
+            self._record_check(
+                "config.cassandra.commitlog_sync_batch_window",
+                "commitlog_sync_batch_window is within recommended bounds",
+                "comp_commitlog_sync + comp_commitlog_sync_batch_window",
+                "no_data",
+                skipped_reason="comp_commitlog_sync not reported by any node",
+            )
+        elif commitlog_fail:
+            self._record_check(
+                "config.cassandra.commitlog_sync_batch_window",
+                "commitlog_sync_batch_window is within recommended bounds",
+                "comp_commitlog_sync + comp_commitlog_sync_batch_window",
+                "fail",
+                affected_nodes=commitlog_fail,
+            )
+        else:
+            self._record_check(
+                "config.cassandra.commitlog_sync_batch_window",
+                "commitlog_sync_batch_window is within recommended bounds",
+                "comp_commitlog_sync + comp_commitlog_sync_batch_window",
+                "pass",
+            )
+
         return recommendations

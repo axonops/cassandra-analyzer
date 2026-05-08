@@ -39,23 +39,31 @@ class EnhancedReportGenerator:
         self.env.filters['severity_text'] = self._severity_text
         self.env.filters['get_attr'] = self._get_attr
     
-    def generate(self, report_data: Dict[str, Any], generate_pdf: bool = False) -> Path:
+    def generate(
+        self,
+        report_data: Dict[str, Any],
+        generate_pdf: bool = False,
+        for_agent: bool = False,
+    ) -> Path:
         """Generate the analysis report
-        
+
         Args:
             report_data: The analysis data
             generate_pdf: Whether to also generate a PDF version
-            
+            for_agent: When True, append the Coverage Manifest + reading
+                guide to the markdown report. The JSON sibling always
+                contains the manifest data.
+
         Returns:
             Path to the generated markdown report
         """
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         cluster_name = report_data["cluster_info"]["cluster_name"]
-        
+
         # Generate enhanced markdown report
         md_path = self.output_dir / f"cassandra_analysis_{cluster_name}_{timestamp}.md"
-        self._generate_enhanced_markdown(report_data, md_path)
-        
+        self._generate_enhanced_markdown(report_data, md_path, for_agent=for_agent)
+
         # Generate JSON report for programmatic access
         json_path = self.output_dir / f"cassandra_analysis_{cluster_name}_{timestamp}.json"
         self._generate_json(report_data, json_path)
@@ -75,26 +83,31 @@ class EnhancedReportGenerator:
         
         return md_path
     
-    def _generate_enhanced_markdown(self, report_data: Dict[str, Any], output_path: Path):
+    def _generate_enhanced_markdown(
+        self,
+        report_data: Dict[str, Any],
+        output_path: Path,
+        for_agent: bool = False,
+    ):
         """Generate enhanced markdown report"""
         # Aggregate recommendations to avoid repetition
         aggregated_results = {}
         node_details = {}  # Store node-specific details for appendix
-        
+
         for section_name, section_data in report_data["analysis_results"].items():
             if section_data.get("error"):
                 aggregated_results[section_name] = section_data
                 continue
-            
+
             recommendations = section_data.get("recommendations", [])
             aggregated_recs = self._aggregate_recommendations(recommendations)
-            
-            # Store aggregated recommendations
+
+            # Store aggregated recommendations (preserve checks for the manifest)
             aggregated_results[section_name] = {
                 **section_data,
-                "recommendations": aggregated_recs
+                "recommendations": aggregated_recs,
             }
-            
+
             # Collect node details for appendix
             for agg_rec in aggregated_recs:
                 if agg_rec.get("affected_nodes"):
@@ -102,15 +115,27 @@ class EnhancedReportGenerator:
                     node_details[issue_key] = {
                         "section": section_name,
                         "title": agg_rec["title"],
-                        "affected_nodes": agg_rec["affected_nodes"]
+                        "affected_nodes": agg_rec["affected_nodes"],
                     }
-        
+
         # Process recommendations to group by priority
         recommendations_by_priority = self._group_recommendations_by_priority(aggregated_results)
-        
+
         # Calculate statistics
         stats = self._calculate_statistics(report_data)
-        
+
+        # Coverage manifest (only meaningful for the agent format)
+        coverage = self._coverage_summary(aggregated_results)
+        coverage_appendix = (
+            self._render_coverage_appendix(aggregated_results, coverage) if for_agent else ""
+        )
+        agent_preamble = self._render_agent_preamble() if for_agent else ""
+        agent_findings = (
+            self._build_agent_findings(recommendations_by_priority) if for_agent else []
+        )
+        if for_agent:
+            node_details = self._compact_node_details_for_agent(node_details)
+
         # Prepare context for template
         context = {
             "cluster_info": report_data["cluster_info"],
@@ -120,18 +145,208 @@ class EnhancedReportGenerator:
             "recommendations_by_priority": recommendations_by_priority,
             "stats": stats,
             "sections": self._prepare_sections(aggregated_results),
-            "node_details": node_details  # Add node details for appendix
+            "node_details": node_details,
+            "for_agent": for_agent,
+            "coverage": coverage,
+            "agent_preamble": agent_preamble,
+            "coverage_appendix": coverage_appendix,
+            "agent_findings": agent_findings,
         }
-        
+
         # Render template
         template = self._get_enhanced_markdown_template()
         content = template.render(**context)
-        
+
         # Clean up multiple consecutive empty lines
         content = self._clean_empty_lines(content)
-        
+        if for_agent:
+            content = self._strip_agent_decorations(content)
+
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(content)
+
+    @staticmethod
+    def _coverage_summary(analysis_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Aggregate per-section check totals into a single coverage block."""
+        per_section: Dict[str, Dict[str, int]] = {}
+        totals = {"pass": 0, "fail": 0, "skipped": 0, "no_data": 0}
+        for section_name, section in analysis_results.items():
+            counts = {"pass": 0, "fail": 0, "skipped": 0, "no_data": 0}
+            for check in section.get("checks") or []:
+                status = check.get("status") if isinstance(check, dict) else None
+                if status in counts:
+                    counts[status] += 1
+                    totals[status] += 1
+            per_section[section_name] = counts
+        return {"totals": totals, "by_section": per_section}
+
+    @staticmethod
+    def _render_agent_preamble() -> str:
+        return (
+            "## How to read this report\n\n"
+            "This report is the contract between cassandra-analyzer and any downstream\n"
+            "consumer (human reviewer or LLM agent). Interpret it as follows:\n\n"
+            "- **The Coverage Manifest (appendix) is authoritative for what was\n"
+            "  checked.** Every check this tool considered appears there with one of\n"
+            "  four statuses. Treat the manifest as the complete inventory of work\n"
+            "  already done — if a check is listed, you do not need to redo it.\n"
+            "- **Findings** under each section are issues the tool detected. Severity\n"
+            "  (CRITICAL / WARNING / INFO) is authoritative — use it verbatim. Each\n"
+            "  finding maps to a stable `id` listed in the Coverage Manifest.\n"
+            "- Coverage Manifest statuses:\n"
+            "  - `pass` — check ran cleanly, the cluster meets expectations on this\n"
+            "    point. Do NOT re-query, re-investigate, or flag as a gap. The\n"
+            "    `Source / Reason` column shows where the data came from if you\n"
+            "    need to cite it.\n"
+            "  - `fail` — check ran and produced a finding above. Cross-reference by\n"
+            "    `id`. Do NOT re-derive.\n"
+            "  - `skipped` — a precondition was not met (e.g. single-node cluster).\n"
+            "    The check does not apply. Do not surface as an issue.\n"
+            "  - `no_data` — the tool would have run this check but the required\n"
+            "    data source returned nothing. **This area is not yet evaluated.** If\n"
+            "    it is in scope for your output, query the source listed in the\n"
+            "    manifest yourself.\n"
+            "- Anything not represented in the Coverage Manifest is genuinely outside\n"
+            "  this tool's scope — flag it as such if your output requires it, rather\n"
+            "  than re-checking items already marked `pass`.\n"
+            "- The richer machine-readable JSON sibling of this file (same basename,\n"
+            "  `.json`) carries the same content with full per-check `data_source`\n"
+            "  strings and `recommendation_id` cross-references.\n"
+        )
+
+    @staticmethod
+    def _strip_agent_decorations(content: str) -> str:
+        """Strip emoji from markdown intended for an LLM consumer.
+
+        The agent preamble already declares that severity strings
+        (CRITICAL / WARNING / INFO) are authoritative, so the visual icons
+        are pure token cost. We also tighten whitespace left behind once
+        the icons are gone so cells like `| 🔴 CRITICAL |` collapse to
+        `| CRITICAL |` rather than `|  CRITICAL |`.
+        """
+        import re
+        # Broad sweep of common emoji + pictograph ranges plus the ZWJ /
+        # variation-selector code points that may follow them.
+        emoji_re = re.compile(
+            "["
+            "\U0001F300-\U0001FAFF"  # symbols & pictographs (incl. supplemental)
+            "\U00002600-\U000027BF"  # misc symbols + dingbats
+            "\U0001F000-\U0001F02F"  # mahjong/dominoes
+            "‍️"           # ZWJ + VS16
+            "]+",
+            flags=re.UNICODE,
+        )
+        content = emoji_re.sub("", content)
+        # Tighten "|  text" / "text  |" left behind by removed icons.
+        # Use [ \t] explicitly — \s would swallow newlines and collapse
+        # multi-line tables onto a single line.
+        content = re.sub(r"\|[ \t]+", "| ", content)
+        content = re.sub(r"[ \t]+\|", " |", content)
+        # Collapse remaining runs of inline whitespace within a line.
+        content = re.sub(r"[ \t]{2,}", " ", content)
+        return content
+
+    @staticmethod
+    def _build_agent_findings(
+        recommendations_by_priority: Dict[str, List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        """Flatten the priority groups into a single severity-sorted list.
+
+        For agent mode we want one canonical findings table rather than
+        separate Immediate / Near Term / Long Term tables — the severity
+        column carries the same information in one row.
+        """
+        findings: List[Dict[str, Any]] = []
+        order = (("immediate", "CRITICAL"), ("nearterm", "WARNING"), ("longterm", "INFO"))
+        for key, severity in order:
+            for rec in recommendations_by_priority.get(key, []):
+                ctx = rec.get("context") or {}
+                current = rec.get("current_value")
+                if current in (None, ""):
+                    current = ctx.get("current_value", "")
+                recommended = ctx.get("recommended_value", "")
+                findings.append({
+                    "severity": severity,
+                    "section": rec["section"].replace("_", " ").title(),
+                    "title": rec.get("title", ""),
+                    "description": rec.get("description", "") or "",
+                    "current": current or "",
+                    "recommended": recommended or "",
+                    "affected": rec.get("count", 1),
+                    "recommendation": rec.get("recommendation", "") or "",
+                    "config_location": ctx.get("config_location", ""),
+                })
+        return findings
+
+    @staticmethod
+    def _compact_node_details_for_agent(
+        node_details: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Mark per-issue node detail entries that can collapse to one row.
+
+        When every affected node carries identical detail values, a row
+        per node is pure repetition for an LLM consumer. We flag those
+        cases so the template can render a single line listing all
+        hostnames instead of N identical rows. Mixed values keep the
+        per-node table.
+        """
+        compacted: Dict[str, Any] = {}
+        for issue_key, entry in node_details.items():
+            affected = entry.get("affected_nodes") or []
+            entry_out = dict(entry)
+            if len(affected) > 1:
+                def _signature(node_info: Dict[str, Any]) -> Tuple:
+                    details = node_info.get("details") or {}
+                    return tuple(sorted(
+                        (k, str(v)) for k, v in details.items() if k != "node_id"
+                    ))
+                first_sig = _signature(affected[0])
+                entry_out["agent_compact"] = all(
+                    _signature(n) == first_sig for n in affected[1:]
+                )
+            else:
+                entry_out["agent_compact"] = False
+            compacted[issue_key] = entry_out
+        return compacted
+
+    def _render_coverage_appendix(
+        self, analysis_results: Dict[str, Any], coverage: Dict[str, Any],
+    ) -> str:
+        """Render the Coverage Manifest appendix as markdown."""
+        lines = ["## Coverage Manifest", ""]
+        lines.append(
+            "_What this tool checked, so downstream consumers know what they can trust "
+            "and what they still need to query._"
+        )
+        lines.append("")
+        totals = coverage["totals"]
+        lines.append(
+            f"**Totals:** {totals['pass']} pass, {totals['fail']} fail, "
+            f"{totals['skipped']} skipped, {totals['no_data']} no_data."
+        )
+        lines.append("")
+
+        for section_name, section in analysis_results.items():
+            checks = section.get("checks") or []
+            if not checks:
+                continue
+            lines.append(f"### {section_name.replace('_', ' ').title()}")
+            lines.append("")
+            lines.append("| ID | Status | Description | Source / Reason |")
+            lines.append("| --- | --- | --- | --- |")
+            for check in checks:
+                cid = check.get("id", "")
+                status = check.get("status", "")
+                # Normalize enum → its string value (e.g. CheckStatus.PASS → "pass")
+                status_str = status.value if hasattr(status, "value") else str(status)
+                desc = (check.get("description") or "").replace("|", "\\|")
+                if status_str in {"skipped", "no_data"}:
+                    last = (check.get("skipped_reason") or "").replace("|", "\\|")
+                else:
+                    last = (check.get("data_source") or "").replace("|", "\\|")
+                lines.append(f"| `{cid}` | {status_str} | {desc} | {last} |")
+            lines.append("")
+        return "\n".join(lines)
     
     def _generate_json(self, report_data: Dict[str, Any], output_path: Path):
         """Generate JSON report"""
@@ -161,7 +376,8 @@ class EnhancedReportGenerator:
                         "current_value": rec.get("current_value"),
                         "impact": rec.get("impact"),
                         "category": rec.get("category", "general"),
-                        "context": rec.get("context", {})
+                        "context": rec.get("context", {}),
+                        "count": rec.get("count", 1),
                     }
                     severity = rec.get("severity", "INFO")
                     if isinstance(severity, str):
@@ -177,7 +393,8 @@ class EnhancedReportGenerator:
                         "current_value": rec.current_value,
                         "impact": rec.impact,
                         "category": rec.category,
-                        "context": rec.context if hasattr(rec, 'context') else {}
+                        "context": rec.context if hasattr(rec, 'context') else {},
+                        "count": 1,
                     }
                     severity_str = rec.severity.value.upper() if hasattr(rec.severity, 'value') else str(rec.severity).upper()
                 
@@ -496,20 +713,24 @@ class EnhancedReportGenerator:
         return self.env.from_string("""
 # Cassandra Cluster Health Assessment
 
-**Cluster:** {{ cluster_info.cluster_name }}  
-**Organization:** {{ cluster_info.organization }}  
+**Cluster:** {{ cluster_info.cluster_name }}
+**Organization:** {{ cluster_info.organization }}
 **Generated:** {{ generation_time }}
 
 ---
-
+{% if for_agent %}
+{{ agent_preamble }}
+---
+{% endif %}
 ## Executive Summary
 
+{% if not for_agent %}
 {% if stats.critical_count > 0 %}
 ### 🔴 **Critical Issues Detected**
 
 Your cluster has **{{ stats.critical_count }} critical issue(s)** requiring immediate attention. Critical issues indicate:
 - Severe misconfigurations that could lead to failures
-- Resource constraints that may cause node instability  
+- Resource constraints that may cause node instability
 - Configuration conflicts preventing proper cluster operation
 
 **Action Required:** Review critical issues below and implement fixes as soon as possible.
@@ -531,6 +752,7 @@ Excellent! No critical issues or warnings detected. Your cluster is well-configu
 
 **Next Steps:** Review informational recommendations for further optimization opportunities.
 {% endif %}
+{% endif %}
 
 ### Key Metrics
 
@@ -543,6 +765,14 @@ Excellent! No critical issues or warnings detected. Your cluster is well-configu
 
 ---
 
+{% if for_agent %}
+## Findings
+
+| Severity | Section | Issue | Description | Current → Recommended | Affected | Recommendation |
+| --- | --- | --- | --- | --- | --- | --- |
+{% for rec in agent_findings %}| {{ rec.severity }} | {{ rec.section }} | {{ rec.title }} | {{ rec.description }}{% if rec.config_location %} ({{ rec.config_location }}){% endif %} | {% if rec.current or rec.recommended %}{{ rec.current }} → {{ rec.recommended }}{% else %}—{% endif %} | {{ rec.affected }} | {{ rec.recommendation }} |
+{% endfor %}
+{% else %}
 ## Summary of Findings
 
 {% if recommendations_by_priority.immediate %}
@@ -576,6 +806,7 @@ These informational items represent optimization opportunities.
 |--------------|---------|-------------|----------|
 {% for rec in recommendations_by_priority.longterm %}| {{ rec.title }} | {{ rec.section.replace('_', ' ').title() }} | {{ rec.description }}{% if rec.context.get('config_location') %} ({{ rec.context.get('config_location') }}){% endif %} | {{ rec.impact if rec.impact else 'Performance improvement' }} |
 {% endfor %}
+{% endif %}
 {% endif %}
 
 ---
@@ -671,10 +902,11 @@ Your Cassandra cluster consists of {{ cluster_state.get_total_nodes() if cluster
 {% endif %}
 
 ---
-
+{% if not for_agent %}
 _**Best Practice**: Each datacenter should have at least 2 seed nodes for optimal cluster discovery and gossip propagation. Ensure seed nodes are well-distributed across racks._
 
 ---
+{% endif %}
 
 ### Keyspaces
 
@@ -696,6 +928,7 @@ Your cluster contains **{{ app_keyspaces | length }} application keyspace(s)** s
 
 ---
 
+{% if not for_agent %}
 {% for section in sections %}
 ## {{ section.icon }} {{ section.title }}
 
@@ -882,9 +1115,11 @@ _**Noted for reference**: Even with no issues detected, regularly review securit
 {% endif %}
 
 {% endfor %}
+{% endif %}
 
 ---
 
+{% if not for_agent %}
 ## Next Steps
 
 1. **Address Critical Issues** - Resolve any {{ stats.critical_count }} critical items immediately
@@ -899,14 +1134,15 @@ _**Noted for reference**: Even with no issues detected, regularly review securit
 
 ### Key Terms
 
-**Node**: A single server running Cassandra  
-**Datacenter**: Logical grouping of nodes (often geographic)  
-**Keyspace**: Top-level data container (like a database)  
-**Replication Factor (RF)**: Number of data copies across nodes  
-**Consistency Level**: How many nodes must respond to queries  
-**Compaction**: Process of merging and cleaning data files  
-**Tombstone**: Marker indicating deleted data  
-**Partition**: Unit of data distribution across nodes  
+**Node**: A single server running Cassandra
+**Datacenter**: Logical grouping of nodes (often geographic)
+**Keyspace**: Top-level data container (like a database)
+**Replication Factor (RF)**: Number of data copies across nodes
+**Consistency Level**: How many nodes must respond to queries
+**Compaction**: Process of merging and cleaning data files
+**Tombstone**: Marker indicating deleted data
+**Partition**: Unit of data distribution across nodes
+{% endif %}
 
 ## Appendix: Cluster Node Details
 
@@ -997,7 +1233,17 @@ This section provides detailed information about which nodes are affected by eac
 **Configuration:** `{{ config_location }}` - `{{ param_name }}`
 
 {% set has_config_location = details.affected_nodes and details.affected_nodes[0].details.get('config_location') %}
+{% if details.agent_compact %}
+{% set node_labels = [] %}
+{% for node_info in details.affected_nodes %}{% set node = cluster_state.nodes.get(node_info.node_id) %}{% set _ = node_labels.append((node.Details.get('host_Hostname', 'unknown') if node else 'unknown') ~ '/' ~ (node.Details.get('listen_address', node.Details.get('comp_listen_address', node_info.node_id[:8] ~ '...')) if node else node_info.node_id[:8] ~ '...')) %}{% endfor %}
+**Affected ({{ details.affected_nodes | length }}):** {{ node_labels | join(', ') }}
+{% set sample = details.affected_nodes[0].details %}
 {% if has_config_location %}
+**Current → Recommended:** {{ sample.get('current_value', 'N/A') }} → {{ sample.get('recommended_value', 'See recommendation') }}
+{% else %}
+**Details:** {% for key, value in sample.items() if key not in ['node_id', 'component'] and value %}{{ key.replace('comp_', '') }}: {{ value }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% elif has_config_location %}
 | Node | Current Value | Recommended |
 |------|---------------|-------------|
 {% for node_info in details.affected_nodes %}{% set node = cluster_state.nodes.get(node_info.node_id) %}| {{ node.Details.get('host_Hostname', 'unknown') if node else 'unknown' }}/{{ node.Details.get('listen_address', node.Details.get('comp_listen_address', node_info.node_id[:8] + '...')) if node else node_info.node_id[:8] + '...' }} | {% if 'memtable_allocation_type' in node_info.details %}{{ node_info.details.get('memtable_allocation_type', 'N/A') }}{% elif 'memtable_flush_writers' in node_info.details %}{{ node_info.details.get('memtable_flush_writers', 'N/A') }}{% elif 'concurrent_reads' in node_info.details and 'Low Concurrent Reads' in details.title %}{{ node_info.details.get('concurrent_reads', 'N/A') }}{% elif 'concurrent_writes' in node_info.details and 'Low Concurrent Writes' in details.title %}{{ node_info.details.get('concurrent_writes', 'N/A') }}{% elif 'native_transport_max_threads' in node_info.details %}{{ node_info.details.get('native_transport_max_threads', 'N/A') }}{% elif 'sysctl_value' in node_info.details %}{{ node_info.details.get('sysctl_value', 'N/A') }}{% else %}{{ node_info.details.get('current_value', 'N/A') }}{% endif %} | {{ node_info.details.get('recommended_value', 'See recommendation') }} |
@@ -1102,7 +1348,7 @@ The following configuration parameters have different values across nodes:
 {% endfor %}
 
 ---
-
+{% if not for_agent %}
 ### Common Issues Explained
 
 **Large Partitions**: When too much data accumulates under one partition key, causing:
@@ -1121,7 +1367,12 @@ The following configuration parameters have different values across nodes:
 - Caused by heap pressure or poor tuning
 
 ---
+{% endif %}
+{% if for_agent %}
+{{ coverage_appendix }}
 
-_Report generated by Cassandra AxonOps Analyzer v1.0_  
+---
+{% endif %}
+_Report generated by Cassandra AxonOps Analyzer v1.0_
 _Analysis completed in {{ cluster_state.collection_duration_seconds | round(2) if cluster_state.collection_duration_seconds else 'N/A' }} seconds_
 """)
