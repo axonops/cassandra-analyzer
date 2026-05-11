@@ -4,7 +4,14 @@ Data models for cluster state and analysis
 
 from .cluster import ClusterState, Node, Keyspace, Table
 from .metrics import MetricData, MetricPoint
-from .recommendations import Check, CheckStatus, Recommendation, Severity
+from .recommendations import (
+    AffectedResources,
+    Check,
+    CheckStatus,
+    Recommendation,
+    RecommendationCategory,
+    Severity,
+)
 from .table_parser import TableCQLParser, ParsedColumn, ParsedPrimaryKey, ParsedTableOptions
 
 __all__ = [
@@ -14,9 +21,11 @@ __all__ = [
     "Table",
     "MetricData",
     "MetricPoint",
+    "AffectedResources",
     "Check",
     "CheckStatus",
     "Recommendation",
+    "RecommendationCategory",
     "Severity",
     "TableCQLParser",
     "ParsedColumn",

@@ -47,7 +47,11 @@ def test_recommendation_creation():
     from cassandra_analyzer.models import Severity
 
     rec = Recommendation(
-        title="Test Issue", description="This is a test", severity=Severity.WARNING, category="test"
+        title="Test Issue",
+        description="This is a test",
+        severity=Severity.WARNING,
+        category="test",
+        recommendation_category="configuration",
     )
 
     assert rec.title == "Test Issue"

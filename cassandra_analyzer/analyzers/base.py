@@ -7,7 +7,13 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from ..config import Config
-from ..models import Check, CheckStatus, ClusterState, Recommendation
+from ..models import (
+    AffectedResources,
+    Check,
+    CheckStatus,
+    ClusterState,
+    Recommendation,
+)
 
 # Cassandra 5.0 renamed many ``*_in_ms`` / ``*_in_mb`` / ``*_mb_per_sec``
 # settings to use duration, data-size, and data-rate syntax (``200ms``,
@@ -178,6 +184,63 @@ def _parse_rate_to_bytes_per_sec(value: Any, default_unit: str = "MiB/s") -> Opt
     return number * factor
 
 
+def _infer_affected_resources(context: Dict[str, Any]) -> "AffectedResources":
+    """Best-effort lift of standard scoping keys from a recommendation's
+    ``**context`` dict into the typed ``AffectedResources`` field.
+
+    Recognised keys (matching the conventions already used across the
+    analyzers):
+
+    - ``keyspace`` (str) → ``keyspaces=[value]``
+    - ``table`` (str) — combined with ``keyspace`` if both present → one
+      entry in ``tables=[{"keyspace": ks, "table": t}]``
+    - ``node`` / ``node_id`` (str) → ``nodes=[value]``
+    - ``affected_nodes`` (list) → ``nodes=[...]`` (existing security-analyzer
+      convention)
+    - ``datacenter`` / ``dc`` (str) → ``datacenters=[value]``
+
+    Call sites needing richer scoping (multi-keyspace findings, per-table
+    lists across many tables) pass ``affected_resources=`` explicitly.
+    """
+    keyspaces: List[str] = []
+    tables: List[Dict[str, str]] = []
+    nodes: List[str] = []
+    datacenters: List[str] = []
+
+    ks = context.get("keyspace")
+    if isinstance(ks, str) and ks:
+        keyspaces.append(ks)
+
+    tbl = context.get("table")
+    if isinstance(tbl, str) and tbl and isinstance(ks, str) and ks:
+        tables.append({"keyspace": ks, "table": tbl})
+
+    for key in ("node", "node_id"):
+        v = context.get(key)
+        if isinstance(v, str) and v:
+            nodes.append(v)
+            break
+
+    affected_nodes = context.get("affected_nodes")
+    if isinstance(affected_nodes, list):
+        for n in affected_nodes:
+            if isinstance(n, str) and n and n not in nodes:
+                nodes.append(n)
+
+    for key in ("datacenter", "dc"):
+        v = context.get(key)
+        if isinstance(v, str) and v:
+            datacenters.append(v)
+            break
+
+    return AffectedResources(
+        keyspaces=keyspaces,
+        tables=tables,
+        nodes=nodes,
+        datacenters=datacenters,
+    )
+
+
 class BaseAnalyzer(ABC):
     """Base class for all analyzers"""
 
@@ -254,17 +317,63 @@ class BaseAnalyzer(ABC):
         current_value: str = None,
         reference_url: str = None,
         check_id: Optional[str] = None,
+        recommendation_category: Optional[str] = None,
+        affected_resources: Any = None,
         **context
     ) -> Recommendation:
-        """Helper method to create recommendations"""
+        """Helper method to create recommendations.
+
+        ``recommendation_category`` is the downstream LLM-service vocabulary
+        (one of performance/reliability/configuration/capacity/security). Each
+        analyzer subclass MUST set ``default_recommendation_category`` so this
+        helper has a sensible fallback when an individual call site doesn't
+        override it. Per-call overrides take precedence — call sites that
+        emit findings outside their analyzer's default lane should pass
+        ``recommendation_category=`` explicitly.
+
+        ``affected_resources`` accepts either an ``AffectedResources`` model
+        or a dict mapping fields (``keyspaces=``, ``tables=``, ``nodes=``,
+        ``datacenters=``). It's the slicer's hook for routing findings to
+        per-keyspace buckets in the LLM service. Cluster-wide findings can
+        omit it; the default is all-empty lists.
+        """
         if current_value is not None and "current_value" not in context:
             context["current_value"] = current_value
+
+        # Resolve the downstream category. Per-call kwarg wins; else fall back
+        # to the analyzer subclass's default; else a coarse "configuration"
+        # fallback for any analyzer that hasn't been audited yet.
+        effective_recommendation_category = (
+            recommendation_category
+            or getattr(self, "default_recommendation_category", None)
+            or "configuration"
+        )
+
+        if affected_resources is None:
+            # Auto-populate from context kwargs when standard fields are
+            # present. Existing call sites pass `keyspace=`, `table=`, `node=`
+            # etc. as **context kwargs; lifting that data into a typed field
+            # means downstream slicing works without a per-call-site rewrite.
+            # Explicit `affected_resources=` always wins.
+            affected_resources_obj = _infer_affected_resources(context)
+        elif isinstance(affected_resources, AffectedResources):
+            affected_resources_obj = affected_resources
+        elif isinstance(affected_resources, dict):
+            affected_resources_obj = AffectedResources(**affected_resources)
+        else:
+            raise TypeError(
+                f"affected_resources must be AffectedResources, dict, or None; "
+                f"got {type(affected_resources).__name__}"
+            )
+
         return Recommendation(
             id=check_id,
             title=title,
             description=description,
             severity=severity,
             category=category,
+            recommendation_category=effective_recommendation_category,
+            affected_resources=affected_resources_obj,
             impact=impact,
             recommendation=recommendation,
             current_value=current_value,

@@ -9,7 +9,12 @@ from .base import BaseAnalyzer
 
 class TableAnalyzer(BaseAnalyzer):
     """Analyzes table design, structure, and performance"""
-    
+
+    category = "schema"
+    # Table-level checks are predominantly performance-shape concerns
+    # (compaction strategy, caching, bloom filters).
+    default_recommendation_category = "performance"
+
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze table structure and configuration"""
         recommendations = []

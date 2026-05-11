@@ -3,7 +3,7 @@ Recommendation and coverage models.
 """
 
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field
 
 
@@ -12,6 +12,37 @@ class Severity(str, Enum):
     INFO = "info"
     WARNING = "warning"
     CRITICAL = "critical"
+
+
+# The five vocabulary values downstream consumers (LLM services) use to
+# classify recommendations. Each `_create_recommendation` call site sets one
+# of these via `recommendation_category` so the consumer doesn't need a
+# section→category lookup table.
+RecommendationCategory = Literal[
+    "performance",
+    "reliability",
+    "configuration",
+    "capacity",
+    "security",
+]
+
+
+class AffectedResources(BaseModel):
+    """Normalized identification of the cluster resources a recommendation
+    applies to. Always present (default-empty) so downstream JSON consumers
+    can rely on the field existing without conditional checks.
+
+    Each list is opt-in per check — checks that are genuinely cluster-wide
+    leave every list empty. Checks that affect specific keyspaces / tables /
+    nodes populate the relevant list. Multi-resource findings can list more
+    than one entry, and the LLM-service slicer fans these out as needed.
+    """
+
+    keyspaces: List[str] = Field(default_factory=list)
+    # Each entry is a dict {"keyspace": "...", "table": "..."}.
+    tables: List[Dict[str, str]] = Field(default_factory=list)
+    nodes: List[str] = Field(default_factory=list)
+    datacenters: List[str] = Field(default_factory=list)
 
 
 class CheckStatus(str, Enum):
@@ -56,7 +87,17 @@ class Recommendation(BaseModel):
     title: str
     description: str
     severity: Severity
-    category: str  # e.g., "infrastructure", "configuration", etc.
+    category: str  # analyzer section, e.g., "infrastructure", "configuration", etc.
+
+    # Downstream consumer vocabulary. The LLM service routes recommendations by
+    # this value rather than translating from `category`. Required at construction
+    # — every `_create_recommendation` call must pick one of the five values.
+    recommendation_category: RecommendationCategory
+
+    # Cluster resources this recommendation applies to. Always present, defaults
+    # to all-empty lists for cluster-wide findings. Populated per check where
+    # the affected keyspaces / tables / nodes / datacenters are knowable.
+    affected_resources: AffectedResources = Field(default_factory=AffectedResources)
 
     # Optional fields
     current_value: Optional[str] = None  # Current observed value

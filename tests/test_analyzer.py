@@ -86,6 +86,7 @@ class TestCassandraAnalyzer:
                     "recommendations": [
                         Recommendation(
                             category="test",
+                            recommendation_category="configuration",
                             severity="info",
                             title="Test Recommendation",
                             description="This is a test",
@@ -137,6 +138,7 @@ class TestCassandraAnalyzer:
                 "recommendations": [
                     Recommendation(
                         category="test",
+                        recommendation_category="configuration",
                         severity="info",
                         title="Test Recommendation",
                         description="This is a test",

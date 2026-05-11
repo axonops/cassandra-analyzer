@@ -54,6 +54,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
     """Analyzes configuration aspects of the cluster"""
 
     category = "configuration"
+    default_recommendation_category = "configuration"
 
     def _get_node_identifier(self, node) -> str:
         """Get a user-friendly node identifier (hostname/ip format)"""

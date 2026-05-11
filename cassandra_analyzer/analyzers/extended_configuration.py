@@ -16,6 +16,7 @@ class ExtendedConfigurationAnalyzer(BaseAnalyzer):
     """Extended configuration analyzer implementing additional checks"""
 
     category = "configuration"
+    default_recommendation_category = "configuration"
 
     # Section-level Check IDs each helper records via _record_section_outcome.
     # Keyed by helper method name → (check_id, description, data_source).
