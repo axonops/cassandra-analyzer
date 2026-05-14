@@ -372,8 +372,11 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         # already explicitly handled below and users on legacy JDK 8 will
         # also be flagged through the CMS branch.
         java_supports_shenandoah = java_major is None or java_major >= 11
-        java_supports_zgc = java_major is None or java_major >= 11
-        java_modern = java_major is None or java_major >= 17
+        # On Cassandra 5.x with JDK 17 we recommend Shenandoah exclusively and
+        # do *not* suggest G1GC as an alternative. (Cassandra 5.0 does not yet
+        # support JDK 21, which would unlock generational ZGC; until then
+        # Shenandoah is the recommended low-pause collector on this stack.)
+        shenandoah_only = bool(is_5x and java_major is not None and java_major >= 17)
 
         # On Cassandra 5.x, Java 17 is the recommended LTS. Flag clusters that
         # are still on Java 8 or 11 so operators consider upgrading.
@@ -385,7 +388,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     description=f"Node {node_identifier} runs Cassandra 5.x on Java {java_major}",
                     severity=Severity.INFO,
                     category="configuration",
-                    impact="Cassandra 5.0 supports Java 11 and Java 17; Java 17 is the current LTS and unlocks ZGC for large heaps",
+                    impact="Cassandra 5.0 supports Java 11 and Java 17; Java 17 is the current LTS and is required for the latest Shenandoah improvements",
                     recommendation="Plan an upgrade to Java 17 (LTS) for new performance and GC options",
                     node=node_identifier,
                     java_major=java_major,
@@ -447,7 +450,11 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     severity=Severity.WARNING,
                     category="configuration",
                     impact="CMS is deprecated and will be removed in future Java versions",
-                    recommendation="Migrate to Shenandoah GC (requires JDK 11+) for low-latency performance, or G1GC as an alternative",
+                    recommendation=(
+                        "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17)"
+                        if shenandoah_only
+                        else "Migrate to Shenandoah GC (requires JDK 11+) for low-latency performance, or G1GC as an alternative"
+                    ),
                     node=node_identifier,
                     current_gc=gc_algorithm,
                     config_location="JVM startup flags"
@@ -474,16 +481,26 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         
         elif gc_algorithm.upper() in ["G1", "G1GC"]:
             # G1GC recommendations - suggest a low-pause alternative if the JDK supports one.
-            if java_modern:
-                alt_gc_text = "ZGC (recommended on Java 17+) or Shenandoah"
-                alt_impact = "G1GC can have longer pause times than ZGC or Shenandoah, which are mature on Java 17+"
-            elif java_supports_shenandoah:
+            # ZGC is intentionally NOT recommended for Cassandra workloads.
+            if java_supports_shenandoah:
                 alt_gc_text = "Shenandoah GC"
-                alt_impact = "G1GC can have longer pause times compared to Shenandoah"
+                if shenandoah_only:
+                    alt_impact = (
+                        "Cassandra 5.x on JDK 17 should use Shenandoah for low-pause performance; "
+                        "G1GC has longer pause times and is not recommended on this stack"
+                    )
+                    alt_severity = Severity.WARNING
+                    alt_recommendation = "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17)"
+                else:
+                    alt_impact = "G1GC can have longer pause times compared to Shenandoah"
+                    alt_severity = Severity.INFO
+                    alt_recommendation = f"Consider migrating to {alt_gc_text} for lower and more predictable latencies"
             else:
-                # Pre-JDK-11 — neither ZGC nor Shenandoah is generally available.
+                # Pre-JDK-11 — Shenandoah is not generally available.
                 alt_gc_text = None
                 alt_impact = None
+                alt_severity = Severity.INFO
+                alt_recommendation = None
 
             if alt_gc_text:
                 recommendations.append(
@@ -491,22 +508,24 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         check_id="config.jvm.gc.algorithm",
                     title=f"Consider {alt_gc_text} Instead of G1GC",
                         description=f"Node {node_identifier} uses G1GC" + (f" on Java {java_major}" if java_major else ""),
-                        severity=Severity.INFO,
+                        severity=alt_severity,
                         category="configuration",
                         impact=alt_impact,
-                        recommendation=f"Consider migrating to {alt_gc_text} for lower and more predictable latencies",
+                        recommendation=alt_recommendation,
                         node=node_identifier,
                         current_gc=gc_algorithm,
                         java_major=java_major,
                         config_location="JVM startup flags"
                     )
                 )
-            
+
             if heap_gb < 20:
-                if java_modern:
-                    fallback_advice = "Increase heap size to 20-31GB, or switch to ZGC / Shenandoah which handle smaller heaps better"
+                if shenandoah_only:
+                    # Don't push operators toward a larger G1GC heap on a stack
+                    # where we want them to move off G1GC entirely.
+                    fallback_advice = "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17), which handles smaller heaps better than G1GC"
                 elif java_supports_shenandoah:
-                    fallback_advice = "Increase heap size to 20-31GB, or switch to Shenandoah GC (JDK 11+)"
+                    fallback_advice = "Increase heap size to 20-31GB, or switch to Shenandoah GC (JDK 11+) which handles smaller heaps better"
                 else:
                     fallback_advice = "Increase heap size to 20-31GB"
                 recommendations.append(
@@ -523,11 +542,11 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         config_location="JVM startup flags"
                     )
                 )
-            
+
             # Check compressed OOPs limit (32GB)
             if heap_gb > 32:
-                if java_modern:
-                    large_heap_advice = "Decrease heap size to 31GB, or switch to ZGC / Shenandoah which handle large heaps without losing compressed OOPs"
+                if shenandoah_only:
+                    large_heap_advice = "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17), which handles large heaps without losing compressed OOPs"
                 elif java_supports_shenandoah:
                     large_heap_advice = "Decrease heap size to 31GB, switch to Shenandoah GC (which handles large heaps better), or consider multiple smaller nodes"
                 else:
@@ -546,9 +565,13 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         config_location="JVM startup flags"
                     )
                 )
-            
+
             # G1GC specific tuning recommendations
-            if 20 <= heap_gb <= 31:
+            # On Cassandra 5.x + JDK 17, the sweet-spot heap is irrelevant —
+            # the operator should be moving off G1GC entirely. Skip the
+            # "G1GC Heap Size Optimal" positive finding in that case so we
+            # don't emit contradictory advice.
+            if 20 <= heap_gb <= 31 and not shenandoah_only:
                 # This is the sweet spot for G1GC, but we can still provide tuning guidance
                 recommendations.append(
                     self._create_recommendation(
@@ -602,40 +625,35 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 )
         
         elif gc_algorithm.upper() == "ZGC":
-            if java_major and java_major >= 17:
-                # ZGC matured significantly in Java 17 (production-ready) and Java 21 (generational ZGC).
-                recommendations.append(
-                    self._create_recommendation(
-                        check_id="config.jvm.gc.algorithm",
-                    title="ZGC Detected (Recommended on Java 17+)",
-                        description=f"Node {node_identifier} uses ZGC on Java {java_major}",
-                        severity=Severity.INFO,
-                        category="configuration",
-                        impact="ZGC delivers sub-millisecond pause times and scales to very large heaps; on Java 21 generational ZGC further reduces overhead",
-                        recommendation="Monitor GC logs to ensure pause times meet SLAs; consider enabling generational ZGC (-XX:+ZGenerational) on Java 21",
-                        node=node_identifier,
-                        current_gc=gc_algorithm,
-                        java_major=java_major,
-                        config_location="JVM startup flags"
-                    )
+            # Non-generational ZGC (the only flavour available on JDK 17) is
+            # not recommended for Cassandra: on write-heavy workloads its
+            # single-generation design produces excessive allocation pressure
+            # and throughput regressions. Generational ZGC addresses this but
+            # requires JDK 21+, which Cassandra 5.0 does not yet support, so
+            # ZGC is currently not a viable option for Cassandra clusters.
+            recommendations.append(
+                self._create_recommendation(
+                    check_id="config.jvm.gc.algorithm",
+                    title="ZGC Detected (Not Recommended for Cassandra)",
+                    description=f"Node {node_identifier} uses ZGC" + (f" on Java {java_major}" if java_major else ""),
+                    severity=Severity.WARNING,
+                    category="configuration",
+                    impact=(
+                        "Non-generational ZGC (JDK 17) is not recommended for Cassandra workloads. "
+                        "Only Generational ZGC is recommended, and it requires JDK 21+, "
+                        "which Cassandra 5.0 does not yet support."
+                    ),
+                    recommendation=(
+                        "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17)"
+                        if shenandoah_only
+                        else "Migrate to G1GC (20-31GB heaps) or Shenandoah GC (JDK 11+) for low-latency performance"
+                    ),
+                    node=node_identifier,
+                    current_gc=gc_algorithm,
+                    java_major=java_major,
+                    config_location="JVM startup flags"
                 )
-            else:
-                # On Java 11 ZGC is still experimental; Shenandoah is a safer choice.
-                recommendations.append(
-                    self._create_recommendation(
-                        check_id="config.jvm.gc.algorithm",
-                    title="ZGC Detected",
-                        description=f"Node {node_identifier} uses ZGC" + (f" on Java {java_major}" if java_major else ""),
-                        severity=Severity.INFO,
-                        category="configuration",
-                        impact="ZGC was experimental before Java 15 and only became production-ready on Java 17",
-                        recommendation="Upgrade to Java 17+ before relying on ZGC in production, or switch to Shenandoah GC",
-                        node=node_identifier,
-                        current_gc=gc_algorithm,
-                        java_major=java_major,
-                        config_location="JVM startup flags"
-                    )
-                )
+            )
         
         elif gc_algorithm == "unknown":
             recommendations.append(
