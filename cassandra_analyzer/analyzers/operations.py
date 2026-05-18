@@ -220,8 +220,45 @@ class OperationsAnalyzer(BaseAnalyzer):
                     size = int(heap_match.group(1))
                     unit = heap_match.group(2)
                     heap_gb = size if unit == 'G' else size/1024 if unit == 'M' else 0
-                    
-                    gc_recs = GCMetricSelector.get_gc_recommendations(most_common_gc, heap_gb)
+
+                    # Find the smallest system memory across nodes so heap
+                    # recommendations don't suggest a heap the smallest host
+                    # cannot afford (heap should stay <=50% of system RAM).
+                    system_memory_gb = None
+                    for node in cluster_state.nodes_data:
+                        mem_raw = node.get('host_virtualmem_Total') or node.get('host_Memory_Total')
+                        if not mem_raw:
+                            continue
+                        try:
+                            mem_gb = int(mem_raw) / (1024 ** 3)
+                        except (ValueError, TypeError):
+                            continue
+                        if mem_gb <= 0:
+                            continue
+                        if system_memory_gb is None or mem_gb < system_memory_gb:
+                            system_memory_gb = mem_gb
+
+                    cassandra_version = (
+                        first_node.get('comp_releaseVersion')
+                        or first_node.get('release_version')
+                    )
+                    java_major = None
+                    java_version_raw = (
+                        first_node.get('comp_jvm_version')
+                        or first_node.get('jvm_version')
+                    )
+                    if java_version_raw:
+                        java_match = re.match(r'(?:1\.)?(\d+)', str(java_version_raw))
+                        if java_match:
+                            java_major = int(java_match.group(1))
+
+                    gc_recs = GCMetricSelector.get_gc_recommendations(
+                        most_common_gc,
+                        heap_gb,
+                        system_memory_gb=system_memory_gb,
+                        cassandra_version=cassandra_version,
+                        java_major=java_major,
+                    )
                     for rec in gc_recs:
                         recommendations.append(
                             self._create_recommendation(
@@ -232,7 +269,10 @@ class OperationsAnalyzer(BaseAnalyzer):
                                 impact="Sub-optimal GC performance",
                                 recommendation="Review GC configuration based on heap size and workload",
                                 gc_type=most_common_gc,
-                                heap_size_gb=heap_gb
+                                heap_size_gb=heap_gb,
+                                system_memory_gb=system_memory_gb,
+                                cassandra_version=cassandra_version,
+                                java_major=java_major,
                             )
                         )
         

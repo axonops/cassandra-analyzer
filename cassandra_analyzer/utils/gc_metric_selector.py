@@ -116,33 +116,101 @@ class GCMetricSelector:
         return queries
     
     @classmethod
-    def get_gc_recommendations(cls, gc_type: str, heap_size_gb: int) -> List[str]:
-        """Get GC-specific recommendations"""
+    def get_gc_recommendations(
+        cls,
+        gc_type: str,
+        heap_size_gb: float,
+        system_memory_gb: Optional[float] = None,
+        cassandra_version: Optional[str] = None,
+        java_major: Optional[int] = None,
+    ) -> List[str]:
+        """Get GC-specific recommendations.
+
+        ``system_memory_gb`` constrains heap-sizing advice so we never suggest a
+        heap the host cannot afford. Cassandra guidance is to keep heap at
+        25-50% of system RAM (the rest is needed for page cache and off-heap
+        structures), so a 20GB G1GC heap implies ~40GB RAM minimum.
+
+        ``cassandra_version`` and ``java_major`` (when supplied) let us
+        recommend Shenandoah exclusively on Cassandra 5.x + JDK 17 — the
+        stack where G1GC is no longer the right default.
+        """
         recommendations = []
-        
+
+        # 50% of RAM is the absolute upper bound for the JVM heap on Cassandra.
+        max_safe_heap_gb = (system_memory_gb / 2) if system_memory_gb else None
+
+        # Cassandra 5.x + JDK 17 → Shenandoah only (no G1GC fallback).
+        try:
+            from .version import V5_0, version_at_least  # type: ignore
+            is_5x = version_at_least(cassandra_version, V5_0) if cassandra_version else False
+        except Exception:
+            # Fall back to a string check so the selector stays usable in
+            # contexts where the version helpers aren't importable.
+            is_5x = bool(cassandra_version and cassandra_version.lstrip('v').startswith(('5.', '6.', '7.')))
+        shenandoah_only = bool(is_5x and java_major is not None and java_major >= 17)
+
         if gc_type == 'G1GC':
-            if heap_size_gb < 20:
+            if shenandoah_only:
                 recommendations.append(
-                    "G1GC performs best with heap sizes >= 20GB. "
-                    "Consider increasing heap or using ParallelGC for smaller heaps."
+                    "On Cassandra 5.x + JDK 17, Shenandoah is the recommended "
+                    "GC algorithm; G1GC is not recommended on this stack."
                 )
+            if heap_size_gb < 20:
+                if max_safe_heap_gb is not None and max_safe_heap_gb < 20:
+                    # Host is too small to ever run a 20GB heap safely — do not
+                    # tell the operator to raise the heap to a level that would
+                    # starve the page cache. Suggest a low-pause GC instead.
+                    recommendations.append(
+                        f"G1GC performs best with heap sizes >= 20GB, but this host "
+                        f"only has {system_memory_gb:.1f}GB RAM (heap should stay "
+                        f"<=50% of system memory, i.e. <= {max_safe_heap_gb:.0f}GB). "
+                        f"Consider Shenandoah (or ParallelGC) for low-pause "
+                        f"behaviour on smaller heaps rather than enlarging the heap."
+                    )
+                elif not shenandoah_only:
+                    recommendations.append(
+                        "G1GC performs best with heap sizes >= 20GB. "
+                        "Consider increasing heap or using ParallelGC for smaller heaps."
+                    )
             if heap_size_gb > 32:
                 recommendations.append(
                     "Heap size > 32GB loses compressed OOPs benefit. "
-                    "Consider multiple instances or ZGC for very large heaps."
+                    "Consider multiple instances or Shenandoah for very large heaps."
                 )
-        
+
         elif gc_type == 'CMS':
-            recommendations.append(
-                "CMS is deprecated. Consider migrating to G1GC (20-31GB heaps) "
-                "or ZGC (very large heaps)."
-            )
-        
-        elif gc_type == 'ZGC':
-            if heap_size_gb < 32:
+            if shenandoah_only:
                 recommendations.append(
-                    "ZGC is designed for very large heaps (>32GB). "
-                    "Consider G1GC for heaps < 32GB."
+                    "CMS is deprecated. On Cassandra 5.x + JDK 17, migrate to "
+                    "Shenandoah (G1GC is not recommended on this stack)."
+                )
+            else:
+                recommendations.append(
+                    "CMS is deprecated. Consider migrating to G1GC (20-31GB heaps) "
+                    "or Shenandoah (low-pause / large heaps)."
+                )
+
+        elif gc_type == 'ZGC':
+            # Non-generational ZGC (the only flavour available on JDK 17) is
+            # not recommended for Cassandra due to allocation-rate / throughput
+            # behaviour on write-heavy workloads. Generational ZGC would be
+            # acceptable, but it requires JDK 21+, which Cassandra 5.0 does
+            # not yet support. Steer users to Shenandoah (or G1GC on older
+            # stacks where Shenandoah-only doesn't apply).
+            if shenandoah_only:
+                recommendations.append(
+                    "ZGC is not recommended for Cassandra on JDK 17. Generational "
+                    "ZGC (the recommended flavour) requires JDK 21+, which "
+                    "Cassandra 5.0 does not yet support. Migrate to Shenandoah "
+                    "(recommended on Cassandra 5.x + JDK 17)."
+                )
+            else:
+                recommendations.append(
+                    "ZGC is not recommended for Cassandra on JDK 17. Generational "
+                    "ZGC (the recommended flavour) requires JDK 21+, which "
+                    "Cassandra 5.0 does not yet support. Consider migrating to "
+                    "G1GC (20-31GB heaps) or Shenandoah."
                 )
         
         elif gc_type == 'ShenandoahGC':
