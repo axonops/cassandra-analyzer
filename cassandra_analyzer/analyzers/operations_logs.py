@@ -12,7 +12,13 @@ from .base import BaseAnalyzer
 
 class OperationsLogAnalyzer(BaseAnalyzer):
     """Analyzes operational issues from Cassandra logs via AxonOps histogram API"""
-    
+
+    category = "operations"
+    # Log-derived findings (tombstone warnings, dropped messages, GC pauses)
+    # are mostly reliability/performance concerns. Reliability is the safer
+    # default because most of these surface data-availability impact.
+    default_recommendation_category = "reliability"
+
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze operational logs"""
         recommendations = []

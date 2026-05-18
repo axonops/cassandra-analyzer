@@ -12,6 +12,10 @@ class OperationsAnalyzer(BaseAnalyzer):
     """Analyzes operational aspects of the cluster"""
 
     category = "operations"
+    # Most ops findings (dropped messages, repair lag, hint accumulation) are
+    # reliability concerns. Per-call overrides handle the few performance ones
+    # (GC pause time, thread-pool saturation).
+    default_recommendation_category = "reliability"
 
     _SECTION_CHECKS = {
         "_analyze_dropped_messages": (

@@ -13,6 +13,11 @@ class InfrastructureAnalyzer(BaseAnalyzer):
     """Analyzes infrastructure aspects of the cluster"""
 
     category = "infrastructure"
+    # Most infrastructure findings (down nodes, rack misconfiguration, single-DC
+    # clusters) are reliability concerns. Call sites that emit capacity-shaped
+    # findings (disk usage, CPU/memory pressure) override this with
+    # ``recommendation_category="capacity"``.
+    default_recommendation_category = "reliability"
 
     def _get_node_identifier(self, node) -> str:
         """Get a human-readable node identifier in hostname/ipaddress format"""

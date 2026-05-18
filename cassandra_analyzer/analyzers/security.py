@@ -11,6 +11,7 @@ class SecurityAnalyzer(BaseAnalyzer):
     """Analyzes security aspects of the cluster"""
 
     category = "security"
+    default_recommendation_category = "security"
 
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze security configuration"""

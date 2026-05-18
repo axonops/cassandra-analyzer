@@ -64,6 +64,10 @@ class DataModelAnalyzer(BaseAnalyzer):
     """Analyzes data model and schema design"""
 
     category = "schema"
+    # Most schema findings are about read/write performance shape — compaction
+    # strategy, bloom filters, secondary indexes. Replication and MV-fanout
+    # findings (which are reliability concerns) override per call.
+    default_recommendation_category = "performance"
 
     def _format_cql_schema(self, cql: str) -> str:
         """Format CQL schema for better readability"""
