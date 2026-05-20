@@ -780,41 +780,16 @@ class InfrastructureAnalyzer(BaseAnalyzer):
         swap_enabled_fail: List[str] = []
 
         for node in cluster_state.nodes.values():
-            swappiness = node.Details.get("host_sysctl_vm.swappiness")
-            if swappiness is not None:
-                try:
-                    swappiness_val = int(swappiness)
-                    swappiness_seen = True
-                    if swappiness_val > 1:
-                        swappiness_fail.append(node.host_id)
-                        recommendations.append(
-                            self._create_recommendation(
-                                check_id="infra.swap.swappiness",
-                                title="High vm.swappiness Setting",
-                                description=f"Node {self._get_node_identifier(node)} has vm.swappiness={swappiness_val}",
-                                severity=Severity.WARNING,
-                                category="infrastructure",
-                                impact="Cassandra may swap to disk causing severe performance degradation",
-                                recommendation="Set vm.swappiness=1 in /etc/sysctl.conf or /etc/sysctl.d/ and run 'sysctl -p'",
-                                current_value=str(swappiness_val),
-                                node_id=node.host_id,
-                                current_swappiness=swappiness_val,
-                                component="Memory",
-                                recommended_value="1",
-                                config_location="/etc/sysctl.conf or /etc/sysctl.d/",
-                            )
-                        )
-                except (ValueError, TypeError):
-                    pass
+            swap_is_enabled = False
 
-            swap_free = node.Details.get("host_swapmem_Free")
-            swap_total = node.Details.get("host_swapmem_Total")
-            if swap_total and swap_free:
+            if "host_swapmem_Free" in node.Details and "host_swapmem_Total" in node.Details:
                 try:
-                    total_val = int(swap_total)
-                    free_val = int(swap_free)
+                    total_val = int(str(node.Details.get("host_swapmem_Total")))
+                    free_val = int(str(node.Details.get("host_swapmem_Free")))
                     swap_usage_seen = True
+                    swap_enabled_seen = True
                     if total_val > 0:
+                        swap_is_enabled = True
                         swap_used_pct = ((total_val - free_val) / total_val) * 100
                         if swap_used_pct > 5:
                             swap_usage_fail.append(node.host_id)
@@ -854,6 +829,37 @@ class InfrastructureAnalyzer(BaseAnalyzer):
                             )
                 except (ValueError, TypeError):
                     pass
+
+            # Only check the swappiness settings if swap is enabled, otherwise this is redundant and creates false positives
+            if swap_is_enabled:
+                swappiness = node.Details.get("host_sysctl_vm.swappiness")
+                if swappiness is not None:
+                    try:
+                        swappiness_val = int(swappiness)
+                        swappiness_seen = True
+                        if swappiness_val > 1:
+                            swappiness_fail.append(node.host_id)
+                            recommendations.append(
+                                self._create_recommendation(
+                                    check_id="infra.swap.swappiness",
+                                    title="High vm.swappiness Setting",
+                                    description=f"Node {self._get_node_identifier(node)} has vm.swappiness={swappiness_val}",
+                                    severity=Severity.WARNING,
+                                    category="infrastructure",
+                                    impact="Cassandra may swap to disk causing severe performance degradation",
+                                    recommendation="Set vm.swappiness=1 in /etc/sysctl.conf or /etc/sysctl.d/ and run 'sysctl -p'",
+                                    current_value=str(swappiness_val),
+                                    node_id=node.host_id,
+                                    current_swappiness=swappiness_val,
+                                    component="Memory",
+                                    recommended_value="1",
+                                    config_location="/etc/sysctl.conf or /etc/sysctl.d/",
+                                )
+                            )
+                    except (ValueError, TypeError):
+                        pass
+            else:
+                swappiness_seen = True
 
         for check_id, description, source, seen, fails in (
             (
