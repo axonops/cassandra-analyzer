@@ -38,11 +38,11 @@ def _detect_java_major(node) -> Optional[int]:
     """Determine the Java major version a node is running, if known."""
     details = getattr(node, "Details", {}) or {}
     for key in (
-        "comp_jvm_version",
-        "comp_java_version",
-        "comp_jvm_java.version",
-        "comp_jvm_java.specification.version",
-        "jvm_version",
+            "comp_jvm_version",
+            "comp_java_version",
+            "comp_jvm_java.version",
+            "comp_jvm_java.specification.version",
+            "jvm_version",
     ):
         major = _parse_java_major(details.get(key))
         if major is not None:
@@ -60,12 +60,12 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         """Get a user-friendly node identifier (hostname/ip format)"""
         if not hasattr(node, 'Details') or not node.Details:
             return node.host_id
-        
+
         hostname = node.Details.get('host_Hostname', 'unknown')
         ip_address = node.Details.get('comp_listen_address', 'unknown')
-        
+
         return f"{hostname}/{ip_address}"
-    
+
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze configuration"""
         try:
@@ -96,47 +96,38 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 "recommendations": [],
                 "checks": [c.model_dump() for c in self._checks],
             }
-    
+
     def _analyze_jvm_settings(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze JVM configuration across nodes """
         recommendations = []
-        
+
         try:
             # Extract JVM settings from node details
             jvm_configs = []
             heap_sizes = []
             gc_algorithms = []
-            
+
             for node in cluster_state.nodes.values():
                 try:
                     if not hasattr(node, 'Details') or not node.Details:
                         continue
-                    
-                    # Parse JVM settings from comp_jvm_input arguments
-                    jvm_args = node.Details.get("comp_jvm_input arguments", "")
-                    
-                    # Extract heap size from -Xmx parameter
+
+                    # Extract heap size from comp_jvm_heap_heapMaxSize (bytes)
                     heap_size_bytes = None
                     heap_size_str = None
-                    import re
-                    heap_match = re.search(r'-Xmx(\d+)([GMK])', jvm_args)
-                    if heap_match:
-                        size = int(heap_match.group(1))
-                        unit = heap_match.group(2)
-                        heap_size_str = f"{size}{unit}"
-                        
-                        # Convert to bytes
-                        if unit == 'G':
-                            heap_size_bytes = size * 1024 * 1024 * 1024
-                        elif unit == 'M':
-                            heap_size_bytes = size * 1024 * 1024
-                        elif unit == 'K':
-                            heap_size_bytes = size * 1024
-                    
+                    raw_heap = node.Details.get("comp_jvm_heap_heapMaxSize")
+                    if raw_heap is not None:
+                        try:
+                            heap_size_bytes = int(raw_heap)
+                            heap_gb = heap_size_bytes / (1024 ** 3)
+                            heap_size_str = f"{heap_gb:.1f}G"
+                        except (ValueError, TypeError):
+                            pass
+
                     # Extract GC algorithm - ensure we're checking the string properly
+                    jvm_args_str = str(node.Details.get("comp_jvm_input arguments", ""))
+
                     gc_algorithm = "unknown"
-                    jvm_args_str = str(jvm_args)  # Ensure it's a string
-                    
                     if "-XX:+UseG1GC" in jvm_args_str:
                         gc_algorithm = "G1GC"
                     elif "-XX:+UseConcMarkSweepGC" in jvm_args_str or "-XX:+UseCMS" in jvm_args_str:
@@ -148,7 +139,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     elif "-XX:+UseShenandoahGC" in jvm_args_str:
                         gc_algorithm = "ShenandoahGC"
                         logger.warning(f"Detected ShenandoahGC for node {self._get_node_identifier(node)} - please verify this is correct")
-                    
+
                     # Get system memory from host_virtualmem_Total
                     system_memory_bytes = None
                     system_memory_str = node.Details.get("host_virtualmem_Total")
@@ -157,7 +148,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                             system_memory_bytes = int(system_memory_str)
                         except (ValueError, TypeError):
                             pass
-                    
+
                     jvm_configs.append({
                         "node": self._get_node_identifier(node),
                         "node_id": node.host_id,
@@ -165,29 +156,29 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         "heap_size_str": heap_size_str,
                         "gc_algorithm": gc_algorithm,
                         "system_memory_bytes": system_memory_bytes,
-                        "jvm_args": jvm_args,
+                        "jvm_args": jvm_args_str,
                         "java_major": _detect_java_major(node),
                         "cassandra_version": node.Details.get("comp_releaseVersion") or node.Details.get("release_version"),
                     })
-                    
+
                     if heap_size_bytes:
                         heap_sizes.append(heap_size_bytes)
                     if gc_algorithm != "unknown":
                         gc_algorithms.append(gc_algorithm)
                         logger.debug(f"Node {self._get_node_identifier(node)} detected GC: {gc_algorithm}")
-                    
+
                 except Exception as e:
                     logger.warning(f"Error processing JVM settings for node {self._get_node_identifier(node)}: {str(e)}")
-            
+
             # Check for JVM heap size consistency
             heap_consistency_rec = None
             if not heap_sizes:
                 self._record_check(
                     "config.jvm.heap.consistency",
                     "All nodes report the same JVM heap size",
-                    "comp_jvm_input arguments",
+                    "comp_jvm_heap_heapMaxSize",
                     "no_data",
-                    skipped_reason="no node reported a parseable -Xmx",
+                    skipped_reason="no node reported a heap size",
                 )
             elif len(set(heap_sizes)) > 1:
                 heap_variations = {}
@@ -212,7 +203,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 self._record_check(
                     "config.jvm.heap.consistency",
                     "All nodes report the same JVM heap size",
-                    "comp_jvm_input arguments",
+                    "comp_jvm_heap_heapMaxSize",
                     "fail",
                     recommendation_id=heap_consistency_rec.id,
                     distinct_sizes=list(heap_variations.keys()),
@@ -221,7 +212,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 self._record_check(
                     "config.jvm.heap.consistency",
                     "All nodes report the same JVM heap size",
-                    "comp_jvm_input arguments",
+                    "comp_jvm_heap_heapMaxSize",
                     "pass",
                 )
 
@@ -274,7 +265,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     "comp_jvm_input arguments",
                     "pass",
                 )
-            
+
             # Analyze individual node JVM configurations
             heap_alloc_recs: List[Recommendation] = []
             gc_algo_recs: List[Recommendation] = []
@@ -304,14 +295,14 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             self._record_jvm_aggregate(
                 "config.jvm.heap.allocation",
                 "Heap is sized 25-50% of system memory and within compressed-OOPs limits",
-                "comp_jvm_input arguments + host_virtualmem_Total",
+                "comp_jvm_heap_heapMaxSize + host_virtualmem_Total",
                 jvm_per_node_evaluated,
                 heap_alloc_recs,
             )
             self._record_jvm_aggregate(
                 "config.jvm.gc.algorithm",
                 "GC algorithm is appropriate for the JDK and heap size",
-                "comp_jvm_input arguments",
+                "comp_jvm_input arguments + comp_jvm_heap_heapMaxSize",
                 jvm_per_node_evaluated,
                 gc_algo_recs,
             )
@@ -327,14 +318,14 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         except Exception as e:
             logger.error(f"JVM settings analysis failed: {str(e)}")
             return []
-    
+
     def _record_jvm_aggregate(
-        self,
-        check_id: str,
-        description: str,
-        data_source: str,
-        evaluated: bool,
-        recs: List[Recommendation],
+            self,
+            check_id: str,
+            description: str,
+            data_source: str,
+            evaluated: bool,
+            recs: List[Recommendation],
     ) -> None:
         """Emit a single aggregated Check entry for a per-node JVM check."""
         if not evaluated:
@@ -357,13 +348,13 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             self._record_check(check_id, description, data_source, "pass")
 
     def _get_jvm_heap_recommendations(
-        self,
-        heap_size: int,
-        gc_algorithm: str,
-        system_memory: int,
-        node_identifier: str,
-        java_major: Optional[int] = None,
-        cassandra_version: Optional[str] = None,
+            self,
+            heap_size: int,
+            gc_algorithm: str,
+            system_memory: int,
+            node_identifier: str,
+            java_major: Optional[int] = None,
+            cassandra_version: Optional[str] = None,
     ) -> List[Recommendation]:
         """Generate JVM heap recommendations"""
         recommendations = []
@@ -397,14 +388,14 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     config_location="JVM startup flags",
                 )
             )
-        
+
         # Convert bytes to more readable units
-        heap_gb = heap_size / (1024**3) if heap_size else 0
-        system_gb = system_memory / (1024**3) if system_memory else 0
-        
+        heap_gb = heap_size / (1024 ** 3) if heap_size else 0
+        system_gb = system_memory / (1024 ** 3) if system_memory else 0
+
         # Calculate heap percentage of system memory
         heap_percentage = (heap_gb / system_gb * 100) if system_gb > 0 else 0
-        
+
         # Check heap size relative to system memory (should be 25-50% for Cassandra)
         if heap_percentage > 60:
             recommendations.append(
@@ -440,7 +431,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     config_location="JVM startup flags"
                 )
             )
-        
+
         if gc_algorithm.upper() in ["CMS", "CONCURRENT_MARK_SWEEP"]:
             # CMS is deprecated in Java 9+
             recommendations.append(
@@ -461,7 +452,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     config_location="JVM startup flags"
                 )
             )
-            
+
             # CMS specific heap recommendations
             if heap_gb < 8 and system_gb >= 30:
                 recommendations.append(
@@ -479,7 +470,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         config_location="JVM startup flags"
                     )
                 )
-        
+
         elif gc_algorithm.upper() in ["G1", "G1GC"]:
             # G1GC recommendations - suggest a low-pause alternative if the JDK supports one.
             # ZGC is intentionally NOT recommended for Cassandra workloads.
@@ -507,7 +498,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 recommendations.append(
                     self._create_recommendation(
                         check_id="config.jvm.gc.algorithm",
-                    title=f"Consider {alt_gc_text} Instead of G1GC",
+                        title=f"Consider {alt_gc_text} Instead of G1GC",
                         description=f"Node {node_identifier} uses G1GC" + (f" on Java {java_major}" if java_major else ""),
                         severity=alt_severity,
                         category="configuration",
@@ -532,7 +523,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 recommendations.append(
                     self._create_recommendation(
                         check_id="config.jvm.heap.allocation",
-                    title="Small Heap Size for G1GC",
+                        title="Small Heap Size for G1GC",
                         description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB but needs at least 20GB",
                         severity=Severity.WARNING,
                         category="configuration",
@@ -555,7 +546,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 recommendations.append(
                     self._create_recommendation(
                         check_id="config.jvm.heap.allocation",
-                    title="Heap Size Above Compressed OOPs Limit",
+                        title="Heap Size Above Compressed OOPs Limit",
                         description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB, above 32GB compressed OOPs limit",
                         severity=Severity.WARNING,
                         category="configuration",
@@ -577,7 +568,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 recommendations.append(
                     self._create_recommendation(
                         check_id="config.jvm.heap.allocation",
-                    title="G1GC Heap Size Optimal",
+                        title="G1GC Heap Size Optimal",
                         description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB which is in the optimal range",
                         severity=Severity.INFO,
                         category="configuration",
@@ -588,7 +579,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         config_location="JVM startup flags"
                     )
                 )
-        
+
         elif gc_algorithm.upper() == "SHENANDOAHGC":
             # Shenandoah is recommended - just provide positive feedback
             recommendations.append(
@@ -605,13 +596,13 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     config_location="JVM startup flags"
                 )
             )
-            
+
             # Shenandoah handles large heaps well, but still check basics
             if heap_percentage > 60:
                 recommendations.append(
                     self._create_recommendation(
                         check_id="config.jvm.heap.allocation",
-                    title="Excessive Heap Allocation with Shenandoah",
+                        title="Excessive Heap Allocation with Shenandoah",
                         description=f"Node {node_identifier} allocates {heap_percentage:.1f}% of system memory ({heap_gb:.1f}GB of {system_gb:.1f}GB) to heap",
                         severity=Severity.WARNING,
                         category="configuration",
@@ -624,7 +615,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         config_location="JVM startup flags"
                     )
                 )
-        
+
         elif gc_algorithm.upper() == "ZGC":
             # Non-generational ZGC (the only flavour available on JDK 17) is
             # not recommended for Cassandra: on write-heavy workloads its
@@ -655,7 +646,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     config_location="JVM startup flags"
                 )
             )
-        
+
         elif gc_algorithm == "unknown":
             recommendations.append(
                 self._create_recommendation(
@@ -670,22 +661,22 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     config_location="JVM startup flags"
                 )
             )
-        
+
         return recommendations
-    
+
     def _analyze_cassandra_settings(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze Cassandra configurations"""
         recommendations = []
-        
+
         logger.debug(f"Starting Cassandra settings analysis with {len(cluster_state.nodes)} nodes")
-        
+
         try:
             # Check for configuration mismatches across nodes (based on ConfigurationMismatches.kt)
             logger.debug("Analyzing configuration mismatches...")
             mismatch_recs = self._analyze_configuration_mismatches(cluster_state)
             logger.debug(f"Configuration mismatch analysis returned {len(mismatch_recs)} recommendations")
             recommendations.extend(mismatch_recs)
-            
+
             # Check specific settings
             logger.debug("Analyzing specific configurations...")
             specific_recs = self._analyze_specific_configurations(cluster_state)
@@ -702,9 +693,9 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             )
             # Re-raise to see full traceback in logs
             raise
-        
+
         return recommendations
-    
+
     def _analyze_configuration_mismatches(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Detect configuration mismatches"""
         recommendations = []
@@ -731,7 +722,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 )
             )
             return recommendations
-        
+
         # Settings to compare across nodes. Each entry is (logical_name, kind)
         # where ``kind`` selects the unit-aware reader so we treat e.g.
         # ``compaction_throughput_mb_per_sec=64`` (4.x) and
@@ -874,7 +865,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             )
 
         return recommendations
-    
+
     def _analyze_specific_configurations(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze specific configuration settings for best practices"""
         recommendations = []
