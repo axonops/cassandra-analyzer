@@ -280,6 +280,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         config["gc_algorithm"],
                         config["system_memory_bytes"],
                         config["node"],
+                        node_id=config["node_id"],
                         java_major=config.get("java_major"),
                         cassandra_version=config.get("cassandra_version"),
                     )
@@ -353,10 +354,17 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             gc_algorithm: str,
             system_memory: int,
             node_identifier: str,
+            node_id: Optional[str] = None,
             java_major: Optional[int] = None,
             cassandra_version: Optional[str] = None,
     ) -> List[Recommendation]:
-        """Generate JVM heap recommendations"""
+        """Generate JVM heap recommendations.
+
+        ``node_identifier`` is the human-readable ``hostname/ip`` label used in
+        description text; ``node_id`` is the node's host UUID and is what
+        populates ``affected_resources.nodes`` (kept consistent with every
+        other check, which scopes findings by UUID).
+        """
         recommendations = []
         is_5x = version_at_least(cassandra_version, V5_0)
         # Be conservative: if we don't know the JDK major, fall back to
@@ -382,7 +390,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     category="configuration",
                     impact="Cassandra 5.0 supports Java 11 and Java 17; Java 17 is the current LTS and is required for the latest Shenandoah improvements",
                     recommendation="Plan an upgrade to Java 17 (LTS) for new performance and GC options",
-                    node=node_identifier,
+                    node_id=node_id,
                     java_major=java_major,
                     cassandra_version=cassandra_version,
                     config_location="JVM startup flags",
@@ -407,7 +415,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     category="configuration",
                     impact="Insufficient memory for page cache and system operations",
                     recommendation="Reduce heap to 25-50% of system memory for optimal performance",
-                    node=node_identifier,
+                    node_id=node_id,
                     current_heap_gb=heap_gb,
                     system_memory_gb=system_gb,
                     heap_percentage=heap_percentage,
@@ -424,7 +432,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     category="configuration",
                     impact="May not be fully utilizing available memory for Cassandra",
                     recommendation="Consider increasing heap size if experiencing GC pressure",
-                    node=node_identifier,
+                    node_id=node_id,
                     current_heap_gb=heap_gb,
                     system_memory_gb=system_gb,
                     heap_percentage=heap_percentage,
@@ -447,7 +455,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         if shenandoah_only
                         else "Migrate to Shenandoah GC (requires JDK 11+) for low-latency performance, or G1GC as an alternative"
                     ),
-                    node=node_identifier,
+                    node_id=node_id,
                     current_gc=gc_algorithm,
                     config_location="JVM startup flags"
                 )
@@ -464,7 +472,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         category="configuration",
                         impact="Underutilized system memory",
                         recommendation="Consider allocating 12-16GB heap size for CMS",
-                        node=node_identifier,
+                        node_id=node_id,
                         current_heap_gb=heap_gb,
                         available_memory_gb=system_gb,
                         config_location="JVM startup flags"
@@ -504,7 +512,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         category="configuration",
                         impact=alt_impact,
                         recommendation=alt_recommendation,
-                        node=node_identifier,
+                        node_id=node_id,
                         current_gc=gc_algorithm,
                         java_major=java_major,
                         config_location="JVM startup flags"
@@ -529,7 +537,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         category="configuration",
                         impact="G1GC performs poorly with small heaps",
                         recommendation=fallback_advice,
-                        node=node_identifier,
+                        node_id=node_id,
                         current_heap_gb=heap_gb,
                         config_location="JVM startup flags"
                     )
@@ -552,7 +560,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         category="configuration",
                         impact="Loss of compressed OOPs optimization, increased memory overhead",
                         recommendation=large_heap_advice,
-                        node=node_identifier,
+                        node_id=node_id,
                         current_heap_gb=heap_gb,
                         config_location="JVM startup flags"
                     )
@@ -574,7 +582,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         category="configuration",
                         impact="Good heap size for G1GC performance",
                         recommendation="Monitor GC logs to ensure pause times meet SLAs",
-                        node=node_identifier,
+                        node_id=node_id,
                         current_heap_gb=heap_gb,
                         config_location="JVM startup flags"
                     )
@@ -591,7 +599,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     category="configuration",
                     impact="Excellent choice for low and predictable pause times",
                     recommendation="Monitor GC logs to ensure pause times meet SLAs",
-                    node=node_identifier,
+                    node_id=node_id,
                     current_gc=gc_algorithm,
                     config_location="JVM startup flags"
                 )
@@ -608,7 +616,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         category="configuration",
                         impact="Insufficient memory for page cache and system operations",
                         recommendation="Even with Shenandoah, reduce heap to 25-50% of system memory",
-                        node=node_identifier,
+                        node_id=node_id,
                         current_heap_gb=heap_gb,
                         system_memory_gb=system_gb,
                         heap_percentage=heap_percentage,
@@ -640,7 +648,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         if shenandoah_only
                         else "Migrate to G1GC (20-31GB heaps) or Shenandoah GC (JDK 11+) for low-latency performance"
                     ),
-                    node=node_identifier,
+                    node_id=node_id,
                     current_gc=gc_algorithm,
                     java_major=java_major,
                     config_location="JVM startup flags"
@@ -657,7 +665,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     category="configuration",
                     impact="Cannot provide GC-specific recommendations",
                     recommendation="Verify JVM arguments are properly configured",
-                    node=node_identifier,
+                    node_id=node_id,
                     config_location="JVM startup flags"
                 )
             )
@@ -795,6 +803,10 @@ class ConfigurationAnalyzer(BaseAnalyzer):
         # Build value map keyed by logical setting → canonical_value → list of (node, display)
         config_values: Dict[str, Dict[Any, List[str]]] = {}
         config_displays: Dict[str, Dict[Any, str]] = {}
+        # Parallel map holding host UUIDs (rather than the hostname/ip labels in
+        # ``config_values``) so ``affected_resources.nodes`` is scoped by UUID,
+        # consistent with every other check.
+        config_node_ids: Dict[str, Dict[Any, List[str]]] = {}
         for node in cluster_state.nodes.values():
             if not hasattr(node, "Details") or not node.Details:
                 continue
@@ -804,6 +816,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 if canonical is None:
                     continue
                 config_values.setdefault(name, {}).setdefault(canonical, []).append(node_label)
+                config_node_ids.setdefault(name, {}).setdefault(canonical, []).append(node.host_id)
                 config_displays.setdefault(name, {}).setdefault(canonical, display)
 
         # Check for mismatches
@@ -823,7 +836,11 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                         recommendation="Align this configuration setting across all nodes in cassandra.yaml",
                         config_key=logical_name,
                         values=value_list,
-                        affected_nodes=list(values.values()),
+                        affected_nodes=[
+                            host_id
+                            for host_ids in config_node_ids[logical_name].values()
+                            for host_id in host_ids
+                        ],
                         config_location="cassandra.yaml",
                     )
                 )
