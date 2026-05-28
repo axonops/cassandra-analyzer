@@ -441,7 +441,14 @@ class ConfigurationAnalyzer(BaseAnalyzer):
             )
 
         if gc_algorithm.upper() in ["CMS", "CONCURRENT_MARK_SWEEP"]:
-            # CMS is deprecated in Java 9+
+            # CMS is deprecated in Java 9+. Push operators to G1GC, or to
+            # Shenandoah on the stacks where it's the right default.
+            if shenandoah_only:
+                cms_recommendation = "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17)"
+            elif java_supports_shenandoah:
+                cms_recommendation = "Migrate to G1GC, or to Shenandoah GC (requires JDK 11+) for low-pause behaviour"
+            else:
+                cms_recommendation = "Migrate to G1GC"
             recommendations.append(
                 self._create_recommendation(
                     check_id="config.jvm.gc.algorithm",
@@ -450,34 +457,12 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     severity=Severity.WARNING,
                     category="configuration",
                     impact="CMS is deprecated and will be removed in future Java versions",
-                    recommendation=(
-                        "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17)"
-                        if shenandoah_only
-                        else "Migrate to Shenandoah GC (requires JDK 11+) for low-latency performance, or G1GC as an alternative"
-                    ),
+                    recommendation=cms_recommendation,
                     node_id=node_id,
                     current_gc=gc_algorithm,
                     config_location="JVM startup flags"
                 )
             )
-
-            # CMS specific heap recommendations
-            if heap_gb < 8 and system_gb >= 30:
-                recommendations.append(
-                    self._create_recommendation(
-                        check_id="config.jvm.heap.allocation",
-                        title="Small Heap Size for Available Memory (CMS)",
-                        description=f"Node {node_identifier} has heap size {heap_gb:.1f}GB with {system_gb:.1f}GB RAM available",
-                        severity=Severity.WARNING,
-                        category="configuration",
-                        impact="Underutilized system memory",
-                        recommendation="Consider allocating 12-16GB heap size for CMS",
-                        node_id=node_id,
-                        current_heap_gb=heap_gb,
-                        available_memory_gb=system_gb,
-                        config_location="JVM startup flags"
-                    )
-                )
 
         elif gc_algorithm.upper() in ["G1", "G1GC"]:
             # G1GC recommendations - suggest a low-pause alternative if the JDK supports one.
@@ -519,30 +504,6 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     )
                 )
 
-            if heap_gb < 20:
-                if shenandoah_only:
-                    # Don't push operators toward a larger G1GC heap on a stack
-                    # where we want them to move off G1GC entirely.
-                    fallback_advice = "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17), which handles smaller heaps better than G1GC"
-                elif java_supports_shenandoah:
-                    fallback_advice = "Increase heap size to 20-31GB, or switch to Shenandoah GC (JDK 11+) which handles smaller heaps better"
-                else:
-                    fallback_advice = "Increase heap size to 20-31GB"
-                recommendations.append(
-                    self._create_recommendation(
-                        check_id="config.jvm.heap.allocation",
-                        title="Small Heap Size for G1GC",
-                        description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB but needs at least 20GB",
-                        severity=Severity.WARNING,
-                        category="configuration",
-                        impact="G1GC performs poorly with small heaps",
-                        recommendation=fallback_advice,
-                        node_id=node_id,
-                        current_heap_gb=heap_gb,
-                        config_location="JVM startup flags"
-                    )
-                )
-
             # Check compressed OOPs limit (>31GB risks losing compressed OOPs)
             if heap_gb > 31:
                 if shenandoah_only:
@@ -567,17 +528,15 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 )
 
             # G1GC specific tuning recommendations
-            # On Cassandra 5.x + JDK 17, the sweet-spot heap is irrelevant —
-            # the operator should be moving off G1GC entirely. Skip the
-            # "G1GC Heap Size Optimal" positive finding in that case so we
-            # don't emit contradictory advice.
-            if 20 <= heap_gb <= 31 and not shenandoah_only:
-                # This is the sweet spot for G1GC, but we can still provide tuning guidance
+            # On Cassandra 5.x + JDK 17, the operator should be moving off
+            # G1GC entirely, so skip the positive finding in that case to
+            # avoid contradictory advice.
+            if heap_gb <= 31 and not shenandoah_only:
                 recommendations.append(
                     self._create_recommendation(
                         check_id="config.jvm.heap.allocation",
-                        title="G1GC Heap Size Optimal",
-                        description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB which is in the optimal range",
+                        title="G1GC Heap Size Within Compressed OOPs Range",
+                        description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB, within the compressed OOPs limit",
                         severity=Severity.INFO,
                         category="configuration",
                         impact="Good heap size for G1GC performance",
@@ -646,7 +605,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     recommendation=(
                         "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17)"
                         if shenandoah_only
-                        else "Migrate to G1GC (20-31GB heaps) or Shenandoah GC (JDK 11+) for low-latency performance"
+                        else "Migrate to G1GC, or to Shenandoah GC (JDK 11+) for low-latency performance"
                     ),
                     node_id=node_id,
                     current_gc=gc_algorithm,
