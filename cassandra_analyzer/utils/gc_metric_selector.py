@@ -173,9 +173,9 @@ class GCMetricSelector:
                         "G1GC performs best with heap sizes >= 20GB. "
                         "Consider increasing heap or using ParallelGC for smaller heaps."
                     )
-            if heap_size_gb > 32:
+            if heap_size_gb > 31:
                 recommendations.append(
-                    "Heap size > 32GB loses compressed OOPs benefit. "
+                    "Heap size > 31GB loses compressed OOPs benefit. "
                     "Consider multiple instances or Shenandoah for very large heaps."
                 )
 

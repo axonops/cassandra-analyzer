@@ -543,19 +543,19 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                     )
                 )
 
-            # Check compressed OOPs limit (32GB)
-            if heap_gb > 32:
+            # Check compressed OOPs limit (>31GB risks losing compressed OOPs)
+            if heap_gb > 31:
                 if shenandoah_only:
                     large_heap_advice = "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17), which handles large heaps without losing compressed OOPs"
                 elif java_supports_shenandoah:
-                    large_heap_advice = "Decrease heap size to 31GB, switch to Shenandoah GC (which handles large heaps better), or consider multiple smaller nodes"
+                    large_heap_advice = "Decrease heap size to 31GB or below, switch to Shenandoah GC (which handles large heaps better), or consider multiple smaller nodes"
                 else:
-                    large_heap_advice = "Decrease heap size to 31GB or consider multiple smaller nodes"
+                    large_heap_advice = "Decrease heap size to 31GB or below, or consider multiple smaller nodes"
                 recommendations.append(
                     self._create_recommendation(
                         check_id="config.jvm.heap.allocation",
                         title="Heap Size Above Compressed OOPs Limit",
-                        description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB, above 32GB compressed OOPs limit",
+                        description=f"Node {node_identifier} has G1GC heap of {heap_gb:.1f}GB, above 31GB compressed OOPs limit",
                         severity=Severity.WARNING,
                         category="configuration",
                         impact="Loss of compressed OOPs optimization, increased memory overhead",
