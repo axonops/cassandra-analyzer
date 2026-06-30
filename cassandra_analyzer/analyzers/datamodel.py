@@ -636,19 +636,6 @@ class DataModelAnalyzer(BaseAnalyzer):
                         indexes_by_keyspace=sai_by_keyspace,
                     )
                 )
-            else:
-                recommendations.append(
-                    self._create_recommendation(
-                        title="Storage-Attached Indexes (SAI) Detected",
-                        description=f"Found {sai_total} SAI indexes",
-                        severity=Severity.INFO,
-                        category="datamodel",
-                        impact="SAI is the modern indexing mechanism in Cassandra 5.x and is well-suited to most secondary-index use cases",
-                        recommendation="No action required; ensure indexed columns reflect actual query patterns",
-                        total_indexes=sai_total,
-                        indexes_by_keyspace=sai_by_keyspace,
-                    )
-                )
 
         if sasi_total > 0:
             recommendations.append(
