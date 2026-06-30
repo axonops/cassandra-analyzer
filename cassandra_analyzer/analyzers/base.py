@@ -215,6 +215,15 @@ def _infer_affected_resources(context: Dict[str, Any]) -> "AffectedResources":
     if isinstance(tbl, str) and tbl and isinstance(ks, str) and ks:
         tables.append({"keyspace": ks, "table": tbl})
 
+    # some checks return tables_affected as a list of strings in keyspace.table format
+    tables_affected = context.get("tables_affected")
+    if isinstance(tables_affected, list) and len(tables_affected) > 0:
+        for t in tables_affected:
+            if isinstance(t, str) and "." in t:
+                ks, tbl = t.split(".")
+                if ks and tbl:
+                    tables.append({"keyspace": ks, "table": tbl})
+
     for key in ("node", "node_id"):
         v = context.get(key)
         if isinstance(v, str) and v:
