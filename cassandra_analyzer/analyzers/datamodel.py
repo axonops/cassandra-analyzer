@@ -5,7 +5,7 @@ Data model analyzer - checks schema design and table configurations
 from typing import Dict, Any, List
 import html
 import re
-from ..models import ClusterState, Recommendation, Severity
+from ..models import ClusterState, Recommendation, Severity, AffectedResources
 from ..utils import V5_0, cluster_at_least, cluster_min_version
 from .base import BaseAnalyzer
 from .table_analyzer import TableAnalyzer
@@ -73,17 +73,17 @@ class DataModelAnalyzer(BaseAnalyzer):
         """Format CQL schema for better readability"""
         # First, unescape HTML entities
         cql = html.unescape(cql)
-        
+
         # Find the WITH clause
         with_match = re.search(r'(\s+WITH\s+)', cql, re.IGNORECASE)
         if not with_match:
             return cql
-        
+
         # Split the CQL at WITH
         before_with = cql[:with_match.start()]
         with_text = with_match.group(1)
         after_with = cql[with_match.end():]
-        
+
         # Parse the WITH options
         options = []
         current_option = []
@@ -91,11 +91,11 @@ class DataModelAnalyzer(BaseAnalyzer):
         bracket_count = 0
         in_quotes = False
         quote_char = None
-        
+
         i = 0
         while i < len(after_with):
             char = after_with[i]
-            
+
             # Track quotes
             if char in ["'", '"'] and (i == 0 or after_with[i-1] != '\\'):
                 if not in_quotes:
@@ -104,7 +104,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                 elif char == quote_char:
                     in_quotes = False
                     quote_char = None
-            
+
             # Track parentheses and brackets when not in quotes
             if not in_quotes:
                 if char == '(':
@@ -121,26 +121,26 @@ class DataModelAnalyzer(BaseAnalyzer):
                         options.append(''.join(current_option).strip())
                     after_with = after_with[:i+1]
                     break
-            
+
             # Split on AND when not inside parentheses/brackets/quotes
-            if (not in_quotes and paren_count == 0 and bracket_count == 0 and 
+            if (not in_quotes and paren_count == 0 and bracket_count == 0 and
                 i + 4 <= len(after_with) and after_with[i:i+4].upper() == ' AND'):
                 if current_option:
                     options.append(''.join(current_option).strip())
                     current_option = []
                 i += 4  # Skip past ' AND'
                 continue
-            
+
             current_option.append(char)
             i += 1
-        
+
         # Add the last option if there is one
         if current_option and ''.join(current_option).strip():
             last_option = ''.join(current_option).strip()
             if last_option.endswith(';'):
                 last_option = last_option[:-1].strip()
             options.append(last_option)
-        
+
         # Remove duplicate options (keep first occurrence)
         seen_options = {}
         unique_options = []
@@ -150,7 +150,7 @@ class DataModelAnalyzer(BaseAnalyzer):
             if option_name not in seen_options:
                 seen_options[option_name] = True
                 unique_options.append(option)
-        
+
         # Find CLUSTERING ORDER option and move it to the front
         clustering_order = None
         other_options = []
@@ -159,26 +159,26 @@ class DataModelAnalyzer(BaseAnalyzer):
                 clustering_order = option
             else:
                 other_options.append(option)
-        
+
         # Reconstruct the WITH clause
         if clustering_order:
             formatted_options = [clustering_order] + other_options
         else:
             formatted_options = other_options
-        
+
         # Build the final CQL
         result = before_with + with_text
         if formatted_options:
             result += formatted_options[0]
             for option in formatted_options[1:]:
                 result += '\n    AND ' + option
-        
+
         # Ensure it ends with semicolon
         if not result.rstrip().endswith(';'):
             result += ';'
-        
+
         return result
-    
+
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze data model"""
         self._reset_checks()
@@ -251,18 +251,18 @@ class DataModelAnalyzer(BaseAnalyzer):
             "details": details,
             "checks": [c.model_dump() for c in self._checks],
         }
-    
+
     def _analyze_replication(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze replication factor settings"""
         recommendations = []
-        
+
         for ks_name, keyspace in cluster_state.keyspaces.items():
             # Skip system keyspaces
             if self._is_system_keyspace(ks_name):
                 continue
-            
+
             rf = keyspace.get_replication_factor()
-            
+
             if rf < self.thresholds.min_replication_factor:
                 recommendations.append(
                     self._create_recommendation(
@@ -277,28 +277,28 @@ class DataModelAnalyzer(BaseAnalyzer):
                         recommended_rf=self.thresholds.min_replication_factor
                     )
                 )
-        
+
         return recommendations
-    
+
     def _analyze_bloom_filters(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze bloom filter performance using AxonOps metrics"""
         recommendations = []
-        
+
         # Get bloom filter metrics: cas_Table_BloomFilterFalseRatio and cas_Table_BloomFilterDiskSpaceUsed
         bloom_false_ratio = cluster_state.metrics.get("bloom_filter_false_ratio", [])
         bloom_disk_usage = cluster_state.metrics.get("bloom_filter_disk_space", [])
-        
+
         # Analyze false positive ratios
         for metric_point in bloom_false_ratio:
             if hasattr(metric_point, 'labels') and hasattr(metric_point, 'value'):
                 keyspace = metric_point.labels.get("keyspace", "unknown")
                 table = metric_point.labels.get("scope", "unknown")
                 false_ratio = float(metric_point.value)
-                
+
                 # Skip system keyspaces
                 if self._is_system_keyspace(keyspace):
                     continue
-                
+
                 # Check if false positive ratio is significantly higher than configured
                 if false_ratio > 0.1:  # 10% false positive rate is concerning
                     recommendations.append(
@@ -328,23 +328,23 @@ class DataModelAnalyzer(BaseAnalyzer):
                             false_positive_rate=false_ratio
                         )
                     )
-        
+
         # Analyze bloom filter disk space usage
         total_bloom_space = 0
         large_bloom_tables = []
-        
+
         for metric_point in bloom_disk_usage:
             if hasattr(metric_point, 'labels') and hasattr(metric_point, 'value'):
                 keyspace = metric_point.labels.get("keyspace", "unknown")
                 table = metric_point.labels.get("scope", "unknown")
                 disk_bytes = float(metric_point.value)
-                
+
                 # Skip system keyspaces
                 if self._is_system_keyspace(keyspace):
                     continue
-                
+
                 total_bloom_space += disk_bytes
-                
+
                 # Check for tables with large bloom filters (>100MB)
                 if disk_bytes > 100 * 1024 * 1024:
                     large_bloom_tables.append({
@@ -352,7 +352,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                         "table": table,
                         "size_mb": disk_bytes / (1024 * 1024)
                     })
-        
+
         # Report on large bloom filters
         if large_bloom_tables:
             recommendations.append(
@@ -366,26 +366,26 @@ class DataModelAnalyzer(BaseAnalyzer):
                     large_bloom_tables=large_bloom_tables
                 )
             )
-        
+
         return recommendations
-    
+
     def _analyze_compression(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze compression effectiveness using cas_Table_CompressionRatio"""
         recommendations = []
-        
+
         # Get compression ratio metrics
         compression_metrics = cluster_state.metrics.get("compression_ratio", [])
-        
+
         for metric_point in compression_metrics:
             if hasattr(metric_point, 'labels') and hasattr(metric_point, 'value'):
                 keyspace = metric_point.labels.get("keyspace", "unknown")
                 table = metric_point.labels.get("scope", "unknown")
                 compression_ratio = float(metric_point.value)
-                
+
                 # Skip system keyspaces
                 if self._is_system_keyspace(keyspace):
                     continue
-                
+
                 # Check for poor compression ratios
                 if compression_ratio < 0.3:  # Less than 30% compression
                     recommendations.append(
@@ -415,9 +415,9 @@ class DataModelAnalyzer(BaseAnalyzer):
                             compression_ratio=compression_ratio
                         )
                     )
-        
+
         return recommendations
-    
+
     def _analyze_compaction_strategies(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze compaction strategies from keyspace schema"""
         recommendations = []
@@ -463,10 +463,10 @@ class DataModelAnalyzer(BaseAnalyzer):
                     # Get table read/write patterns if available
                     read_count = self._get_table_metric_value(cluster_state.metrics, "table_reads", ks_name, table_name)
                     write_count = self._get_table_metric_value(cluster_state.metrics, "table_writes", ks_name, table_name)
-                    
+
                     if read_count and write_count:
                         read_write_ratio = read_count / write_count if write_count > 0 else float('inf')
-                        
+
                         # Recommend LCS for read-heavy workloads
                         if read_write_ratio > 10:
                             recommendations.append(
@@ -483,7 +483,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                                     read_write_ratio=read_write_ratio
                                 )
                             )
-                
+
                 # Check for TimeWindowCompactionStrategy without time-series data
                 elif "TimeWindowCompactionStrategy" in compaction_strategy:
                     recommendations.append(
@@ -534,7 +534,7 @@ class DataModelAnalyzer(BaseAnalyzer):
             )
 
         return recommendations
-    
+
     # Each CREATE [CUSTOM] INDEX statement; group 1 is the body of the
     # statement (up to the next semicolon or end of input) which we then
     # inspect for USING '...'.
@@ -557,6 +557,15 @@ class DataModelAnalyzer(BaseAnalyzer):
         if "sasi" in u:
             return "sasi"
         return "custom"
+
+    @classmethod
+    def _by_keyspace_to_affected_resources(cls, tables_by_keyspace: Dict[str, List[str]]) -> AffectedResources:
+        """Convert a dictionary of tables by keyspace in the format {keyspace: [table1, table2, ...]}
+         to an AffectedResources object containing a list of tables."""
+        flat_tables = []
+        for ks in tables_by_keyspace:
+            flat_tables.extend({"keyspace": ks, "table": table} for table in tables_by_keyspace[ks])
+        return AffectedResources(tables=flat_tables)
 
     def _analyze_secondary_indexes(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze secondary indexes in schema, distinguishing SAI from legacy 2i."""
@@ -605,6 +614,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                         recommendation="Evaluate migrating these indexes to SAI (CREATE CUSTOM INDEX ... USING 'StorageAttachedIndex'), or denormalise the data if the index is purely a query-side convenience",
                         total_indexes=legacy_total,
                         indexes_by_keyspace=legacy_by_keyspace,
+                        affected_resources=self._by_keyspace_to_affected_resources(legacy_by_keyspace),
                     )
                 )
             else:
@@ -618,6 +628,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                         recommendation="Consider denormalizing data or using application-level indexing instead",
                         total_indexes=legacy_total,
                         indexes_by_keyspace=legacy_by_keyspace,
+                        affected_resources=self._by_keyspace_to_affected_resources(legacy_by_keyspace),
                     )
                 )
 
@@ -634,6 +645,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                         recommendation="Complete the upgrade to Cassandra 5.x on all nodes before introducing SAI",
                         total_indexes=sai_total,
                         indexes_by_keyspace=sai_by_keyspace,
+                        affected_resources=self._by_keyspace_to_affected_resources(sai_by_keyspace),
                     )
                 )
 
@@ -648,28 +660,29 @@ class DataModelAnalyzer(BaseAnalyzer):
                     recommendation="Migrate to SAI on Cassandra 5.x, or denormalise the data on older versions",
                     total_indexes=sasi_total,
                     indexes_by_keyspace=sasi_by_keyspace,
+                    affected_resources=self._by_keyspace_to_affected_resources(sasi_by_keyspace),
                 )
             )
 
         return recommendations
-    
+
     def _analyze_collection_types(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze collection type usage in tables"""
         recommendations = []
-        
+
         collection_table_details = []
         large_collection_concerns = []
-        
+
         for ks_name, keyspace in cluster_state.keyspaces.items():
             # Skip system keyspaces
             if self._is_system_keyspace(ks_name):
                 continue
-            
+
             for table_name, table in keyspace.tables_dict.items():
                 if hasattr(table, 'CQL') and table.CQL:
                     cql = table.CQL
                     cql_lower = cql.lower()
-                    
+
                     # Check for collection types
                     if any(collection in cql_lower for collection in ['set<', 'list<', 'map<']):
                         # Extract relevant schema info
@@ -677,18 +690,18 @@ class DataModelAnalyzer(BaseAnalyzer):
                             "table": f"{ks_name}.{table_name}",
                             "schema": self._format_cql_schema(table.CQL)  # Format CQL for display
                         })
-                        
+
                         # Check for potentially problematic patterns
                         # 1. Collections of collections (which would require frozen)
                         if 'list<frozen<' in cql_lower or 'set<frozen<' in cql_lower or 'map<frozen<' in cql_lower:
                             # This is fine - nested collections are properly frozen
                             pass
-                        
+
                         # 2. Large collections without explicit size limits
                         # This is more of a design concern than a frozen/non-frozen issue
                         if table_name in ['events', 'logs', 'history', 'timeline']:
                             large_collection_concerns.append(f"{ks_name}.{table_name}")
-        
+
         # Report on tables with potential for large collections
         if large_collection_concerns:
             recommendations.append(
@@ -702,7 +715,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                     tables_of_concern=large_collection_concerns
                 )
             )
-        
+
         # General collection usage info with schema details
         if collection_table_details:
             recommendations.append(
@@ -717,9 +730,9 @@ class DataModelAnalyzer(BaseAnalyzer):
                     collection_table_details=collection_table_details
                 )
             )
-        
+
         return recommendations
-    
+
     def _analyze_materialized_views(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze materialized views usage"""
         recommendations = []
@@ -768,47 +781,47 @@ class DataModelAnalyzer(BaseAnalyzer):
         )
 
         return recommendations
-    
+
     def _get_table_metric_value(self, metrics: Dict, metric_name: str, keyspace: str, table: str) -> float:
         """Helper to get metric value for specific table"""
         metric_data = metrics.get(metric_name, [])
         for metric_point in metric_data:
-            if (hasattr(metric_point, 'labels') and 
-                metric_point.labels.get("keyspace") == keyspace and 
+            if (hasattr(metric_point, 'labels') and
+                metric_point.labels.get("keyspace") == keyspace and
                 metric_point.labels.get("scope") == table):
                 return float(metric_point.value)
         return 0.0
-    
+
     def _analyze_unused_tables(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze potentially unused tables using AxonOps table performance metrics"""
         recommendations = []
-        
+
         # Use coordinator read/write count metrics from dashboard queries
         table_reads = cluster_state.metrics.get("table_coordinator_reads", [])
         table_writes = cluster_state.metrics.get("table_coordinator_writes", [])
-        
+
         # Track all tables from schema
         all_tables = set()
         for ks_name, keyspace in cluster_state.keyspaces.items():
             if not self._is_system_keyspace(ks_name):
                 for table_name in keyspace.tables_dict.keys():
                     all_tables.add(f"{ks_name}.{table_name}")
-        
+
         # Track tables with activity
         active_tables = set()
         unused_tables = []
         low_activity_tables = []
-        
+
         # Check read activity
         for metric_point in table_reads:
             if hasattr(metric_point, 'labels') and hasattr(metric_point, 'value'):
                 keyspace = metric_point.labels.get("keyspace", "unknown")
                 table = metric_point.labels.get("scope", "unknown")
                 read_count = float(metric_point.value)
-                
+
                 if self._is_system_keyspace(keyspace):
                     continue
-                
+
                 table_key = f"{keyspace}.{table}"
                 if read_count > 0:
                     active_tables.add(table_key)
@@ -818,17 +831,17 @@ class DataModelAnalyzer(BaseAnalyzer):
                         "reads": read_count,
                         "activity_type": "no_reads"
                     })
-        
+
         # Check write activity
         for metric_point in table_writes:
             if hasattr(metric_point, 'labels') and hasattr(metric_point, 'value'):
                 keyspace = metric_point.labels.get("keyspace", "unknown")
                 table = metric_point.labels.get("scope", "unknown")
                 write_count = float(metric_point.value)
-                
+
                 if self._is_system_keyspace(keyspace):
                     continue
-                
+
                 table_key = f"{keyspace}.{table}"
                 if write_count > 0:
                     active_tables.add(table_key)
@@ -838,7 +851,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                         "writes": write_count,
                         "activity_type": "no_writes"
                     })
-        
+
         # Find completely unused tables (no reads or writes)
         for table_key in all_tables:
             if table_key not in active_tables:
@@ -848,10 +861,10 @@ class DataModelAnalyzer(BaseAnalyzer):
                     if low_table["table"] == table_key:
                         found_in_low_activity = True
                         break
-                
+
                 if not found_in_low_activity:
                     unused_tables.append(table_key)
-        
+
         # Report completely unused tables
         if unused_tables:
             recommendations.append(
@@ -865,7 +878,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                     unused_tables=unused_tables
                 )
             )
-        
+
         # Report tables with very low activity
         if len(low_activity_tables) > 0:
             recommendations.append(
@@ -879,19 +892,19 @@ class DataModelAnalyzer(BaseAnalyzer):
                     low_activity_tables=low_activity_tables
                 )
             )
-        
+
         return recommendations
-    
+
     def _analyze_table_performance(self, cluster_state: ClusterState) -> List[Recommendation]:
         """Analyze table-level performance metrics"""
         recommendations = []
-        
+
         # Note: Due to the way AxonOps metrics work, we can't query table-specific metrics
         # without knowing the keyspace and table names in advance. The metrics API requires
         # these to be specified in the query, not filtered after the fact.
         # 
         # For now, we'll analyze the metrics that are available without table-specific queries
         # such as coordinator read/write counts to identify unused tables.
-        
+
         return recommendations
-    
+
