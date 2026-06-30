@@ -216,7 +216,7 @@ def _infer_affected_resources(context: Dict[str, Any]) -> "AffectedResources":
         tables.append({"keyspace": ks, "table": tbl})
 
     # some checks return tables_affected as a list of strings in keyspace.table format
-    tables_affected = context.get("tables_affected")
+    tables_affected = context.get("tables_affected") or context.get("unused_tables")
     if isinstance(tables_affected, list) and len(tables_affected) > 0:
         for t in tables_affected:
             if isinstance(t, str) and "." in t:
