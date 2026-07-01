@@ -208,12 +208,12 @@ def _infer_affected_resources(context: Dict[str, Any]) -> "AffectedResources":
     datacenters: List[str] = []
 
     ks = context.get("keyspace")
-    if isinstance(ks, str) and ks:
-        keyspaces.append(ks)
-
     tbl = context.get("table")
-    if isinstance(tbl, str) and tbl and isinstance(ks, str) and ks:
-        tables.append({"keyspace": ks, "table": tbl})
+    if isinstance(ks, str) and ks:
+        if isinstance(tbl, str) and tbl:
+            tables.append({"keyspace": ks, "table": tbl})
+        else:
+            keyspaces.append(ks)
 
     # some checks return tables_affected as a list of strings in keyspace.table format
     tables_affected = context.get("tables_affected") or context.get("unused_tables")
