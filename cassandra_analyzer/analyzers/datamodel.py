@@ -7,7 +7,7 @@ import html
 import re
 from ..models import ClusterState, Recommendation, Severity, AffectedResources
 from ..utils import V5_0, cluster_at_least, cluster_min_version
-from .base import BaseAnalyzer
+from .base import BaseAnalyzer, table_list_to_dict_list
 from .table_analyzer import TableAnalyzer
 
 
@@ -363,7 +363,9 @@ class DataModelAnalyzer(BaseAnalyzer):
                     category="datamodel",
                     impact="Significant memory and disk usage for bloom filters",
                     recommendation="Consider if bloom filter settings are optimal for these large tables",
-                    large_bloom_tables=large_bloom_tables
+                    large_bloom_tables=large_bloom_tables,
+                    affected_resources=AffectedResources(
+                        tables=[{"keyspace": t["keyspace"], "table": t["table"]} for t in large_bloom_tables])
                 )
             )
 
@@ -718,6 +720,7 @@ class DataModelAnalyzer(BaseAnalyzer):
 
         # General collection usage info with schema details
         if collection_table_details:
+            table_list = [t["table"] for t in collection_table_details]
             recommendations.append(
                 self._create_recommendation(
                     title="Collection Types Usage",
@@ -727,7 +730,8 @@ class DataModelAnalyzer(BaseAnalyzer):
                     impact="Collections are useful but should be kept reasonably sized",
                     recommendation="Keep collections under 100KB and monitor their growth",
                     collection_tables=[t["table"] for t in collection_table_details],
-                    collection_table_details=collection_table_details
+                    collection_table_details=collection_table_details,
+                    affected_resources=AffectedResources(tables=table_list_to_dict_list(table_list))
                 )
             )
 
@@ -777,6 +781,7 @@ class DataModelAnalyzer(BaseAnalyzer):
                 impact=impact_text,
                 recommendation=recommendation_text,
                 materialized_views=materialized_views,
+                affected_resources=AffectedResources(tables=table_list_to_dict_list(materialized_views))
             )
         )
 
@@ -889,7 +894,8 @@ class DataModelAnalyzer(BaseAnalyzer):
                     category="datamodel",
                     impact="Low-activity tables may indicate unused or rarely used data",
                     recommendation="Review if these tables are still needed or can be archived",
-                    low_activity_tables=low_activity_tables
+                    low_activity_tables=low_activity_tables,
+                    affected_resources=AffectedResources(tables=table_list_to_dict_list([t["table"] for t in low_activity_tables]))
                 )
             )
 
@@ -907,4 +913,3 @@ class DataModelAnalyzer(BaseAnalyzer):
         # such as coordinator read/write counts to identify unused tables.
 
         return recommendations
-

@@ -216,13 +216,8 @@ def _infer_affected_resources(context: Dict[str, Any]) -> "AffectedResources":
             keyspaces.append(ks)
 
     # some checks return tables_affected as a list of strings in keyspace.table format
-    tables_affected = context.get("tables_affected") or context.get("unused_tables")
-    if isinstance(tables_affected, list) and len(tables_affected) > 0:
-        for t in tables_affected:
-            if isinstance(t, str) and "." in t:
-                ks, tbl = t.split(".")
-                if ks and tbl:
-                    tables.append({"keyspace": ks, "table": tbl})
+    tables_affected = context.get("tables_affected") or context.get("unused_tables") or context.get("tables_of_concern")
+    tables.extend(table_list_to_dict_list(tables_affected))
 
     for key in ("node", "node_id"):
         v = context.get(key)
@@ -248,6 +243,18 @@ def _infer_affected_resources(context: Dict[str, Any]) -> "AffectedResources":
         nodes=nodes,
         datacenters=datacenters,
     )
+
+
+def table_list_to_dict_list(tables: List[str] | None) -> List[dict]:
+    """Take a list of tables in keyspace.table format and return them in the correct format to be added to an AffectedResources object"""
+    result = []
+    if isinstance(tables, list) and len(tables) > 0:
+        for t in tables:
+            if isinstance(t, str) and "." in t:
+                ks, tbl = t.split(".")
+                if ks and tbl:
+                    result.append({"keyspace": ks, "table": tbl})
+    return result
 
 
 class BaseAnalyzer(ABC):
@@ -389,39 +396,39 @@ class BaseAnalyzer(ABC):
             reference_url=reference_url,
             context=context
         )
-    
+
     def _get_metric_average(self, metrics: Dict[str, Any], metric_name: str) -> float:
         """Get average value for a metric"""
         metric_data = metrics.get(metric_name, [])
         if not metric_data:
             return 0.0
-        
+
         # Assuming metric_data is a list of MetricData objects
         total_points = 0
         total_value = 0.0
-        
+
         for metric in metric_data:
             if hasattr(metric, 'data_points'):
                 for point in metric.data_points:
                     total_value += point.value
                     total_points += 1
-        
+
         return total_value / total_points if total_points > 0 else 0.0
-    
+
     def _get_metric_max(self, metrics: Dict[str, Any], metric_name: str) -> float:
         """Get maximum value for a metric"""
         metric_data = metrics.get(metric_name, [])
         if not metric_data:
             return 0.0
-        
+
         max_value = 0.0
         for metric in metric_data:
             if hasattr(metric, 'data_points'):
                 for point in metric.data_points:
                     max_value = max(max_value, point.value)
-        
+
         return max_value
-    
+
     def _is_system_keyspace(self, keyspace_name: str) -> bool:
         """Check if a keyspace is a system keyspace"""
         system_keyspaces = {
