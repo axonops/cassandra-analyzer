@@ -505,7 +505,7 @@ class ConfigurationAnalyzer(BaseAnalyzer):
                 )
 
             # Check compressed OOPs limit (>31GB risks losing compressed OOPs)
-            if heap_gb > 31:
+            if heap_gb >= 31:
                 if shenandoah_only:
                     large_heap_advice = "Migrate to Shenandoah GC (recommended on Cassandra 5.x + JDK 17), which handles large heaps without losing compressed OOPs"
                 elif java_supports_shenandoah:
