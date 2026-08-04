@@ -354,7 +354,8 @@ class TableAnalyzer(BaseAnalyzer):
                             recommendation="Set speculative_retry to NEVER unless you have specific latency requirements that benefit from it",
                             current_value=f"speculative_retry={retry_setting}",
                             speculative_retry=retry_setting,
-                            recommended_value="NEVER"
+                            recommended_value="NEVER",
+                            tables_affected=[table_name],
                         )
                     )
         

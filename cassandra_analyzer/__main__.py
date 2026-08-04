@@ -157,7 +157,7 @@ def main(config, output_dir, verbose, pdf, stdout_format):
     elif stdout_format == "json":
         json_path = report_path.with_suffix(".json")
         if json_path.exists():
-            click.echo(json_path.read_text())
+            print(json_path.read_text())
         else:
             click.echo(f"Error: JSON report not found at {json_path}", err=True)
             raise click.ClickException("JSON report missing")

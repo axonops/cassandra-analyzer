@@ -27,7 +27,7 @@ class TestConfigurationAnalyzer:
     def test_heap_size_configuration(self, analyzer):
         """Test heap size configuration analysis"""
         cluster_state = create_cluster_state(num_nodes=3)
-        
+
         # Add JVM configuration to node Details
         for node_id, node in cluster_state.nodes.items():
             node.Details["comp_jvm_input arguments"] = "-Xmx4G -XX:+UseG1GC"

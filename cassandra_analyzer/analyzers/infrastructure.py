@@ -2,11 +2,12 @@
 Infrastructure analyzer - checks hardware, OS, and deployment aspects
 """
 
+import os
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from ..models import ClusterState, Recommendation, Severity
 from .base import BaseAnalyzer
+from ..models import ClusterState, Recommendation, Severity
 
 
 class InfrastructureAnalyzer(BaseAnalyzer):
@@ -24,6 +25,40 @@ class InfrastructureAnalyzer(BaseAnalyzer):
         hostname = node.Details.get("host_Hostname", "unknown")
         listen_address = node.Details.get("comp_listen_address", "unknown")
         return f"{hostname}/{listen_address}"
+
+    def _get_disk_properties(self, node, path: str) -> Dict[str, Any]:
+        """
+        Find the disk properties (fstype, Total, Used) for a given path by
+        working up the directory tree until a match is found in node.Details.
+        """
+        props = {}
+        current_path = os.path.normpath(path)
+
+        while current_path:
+            fstype = node.Details.get(f"host_disk_{current_path}_fstype")
+            total = node.Details.get(f"host_disk_{current_path}_Total")
+            used = node.Details.get(f"host_disk_{current_path}_Used")
+
+            if fstype or total or used:
+                props["fstype"] = fstype
+                props["total"] = total
+                props["used"] = used
+                props["mount_point"] = current_path
+                return props
+
+            if current_path == "/":
+                break
+
+            parent = os.path.dirname(current_path)
+            if parent == current_path:  # reached root or same
+                if current_path != "/":
+                    current_path = "/"
+                else:
+                    break
+            else:
+                current_path = parent
+
+        return props
 
     def analyze(self, cluster_state: ClusterState) -> Dict[str, Any]:
         """Analyze infrastructure"""
@@ -56,12 +91,12 @@ class InfrastructureAnalyzer(BaseAnalyzer):
     # ------------------------------------------------------------------ helpers
 
     def _record_pass_or_fail(
-        self,
-        check_id: str,
-        description: str,
-        data_source: str,
-        rec: Optional[Recommendation],
-        **context: Any,
+            self,
+            check_id: str,
+            description: str,
+            data_source: str,
+            rec: Optional[Recommendation],
+            **context: Any,
     ) -> None:
         """Record fail (with rec id) when a recommendation was created, else pass."""
         if rec is None:
@@ -498,38 +533,25 @@ class InfrastructureAnalyzer(BaseAnalyzer):
         data_usage_fail_nodes: List[str] = []
 
         for node in cluster_state.nodes.values():
-            data_fstype = node.Details.get("host_disk_/srv/cassandra_fstype")
+            # Parse data directories from cassandra.yaml (via AxonOps)
+            dirs_str = node.Details.get("comp_data_file_directories", "[]")
+            # Usually format is "[/var/lib/cassandra/data]"
+            data_dirs = [d.strip() for d in dirs_str.strip("[]").split(",") if d.strip()]
+            if not data_dirs:
+                data_dirs = ["/var/lib/cassandra/data"]
 
-            if data_fstype:
-                fstype_data_seen = True
-                if data_fstype != "xfs":
-                    fstype_fail_nodes.append(node.host_id)
-                    recommendations.append(
-                        self._create_recommendation(
-                            check_id="infra.storage.fs.data",
-                            title=f"Suboptimal Data Filesystem: {data_fstype}",
-                            description=f"Node {self._get_node_identifier(node)} uses {data_fstype} for data directory",
-                            severity=Severity.WARNING,
-                            category="infrastructure",
-                            impact="Potential performance degradation with non-XFS filesystem",
-                            recommendation="Consider using XFS filesystem for Cassandra data directories",
-                            node_id=node.host_id,
-                            current_fstype=data_fstype,
-                            component="Storage",
-                        )
-                    )
-
-            root_total = node.Details.get("host_disk_/_Total")
-            root_used = node.Details.get("host_disk_/_Used")
-            data_total = node.Details.get("host_disk_/srv/cassandra_Total")
-            data_used = node.Details.get("host_disk_/srv/cassandra_Used")
+            # Check root disk usage
+            root_props = self._get_disk_properties(node, "/")
+            root_total = root_props.get("total")
+            root_used = root_props.get("used")
 
             if root_total and root_used:
                 try:
                     root_usage_pct = (int(root_used) / int(root_total)) * 100
                     root_usage_seen = True
                     if root_usage_pct > 90:
-                        root_usage_fail_nodes.append(node.host_id)
+                        if node.host_id not in root_usage_fail_nodes:
+                            root_usage_fail_nodes.append(node.host_id)
                         recommendations.append(
                             self._create_recommendation(
                                 check_id="infra.storage.disk.root_usage",
@@ -545,7 +567,8 @@ class InfrastructureAnalyzer(BaseAnalyzer):
                             )
                         )
                     elif root_usage_pct > 80:
-                        root_usage_fail_nodes.append(node.host_id)
+                        if node.host_id not in root_usage_fail_nodes:
+                            root_usage_fail_nodes.append(node.host_id)
                         recommendations.append(
                             self._create_recommendation(
                                 check_id="infra.storage.disk.root_usage",
@@ -563,44 +586,84 @@ class InfrastructureAnalyzer(BaseAnalyzer):
                 except (ValueError, TypeError):
                     pass
 
-            if data_total and data_used:
-                try:
-                    data_usage_pct = (int(data_used) / int(data_total)) * 100
-                    data_usage_seen = True
-                    if data_usage_pct > 85:
-                        data_usage_fail_nodes.append(node.host_id)
+            # Check data disks (filesystem type and usage)
+            checked_mounts = set()
+            for data_dir in data_dirs:
+                disk_props = self._get_disk_properties(node, data_dir)
+                mount_point = disk_props.get("mount_point")
+
+                if not mount_point or mount_point in checked_mounts:
+                    continue
+
+                checked_mounts.add(mount_point)
+
+                data_fstype = disk_props.get("fstype")
+                data_total = disk_props.get("total")
+                data_used = disk_props.get("used")
+
+                if data_fstype:
+                    fstype_data_seen = True
+                    if data_fstype != "xfs":
+                        if node.host_id not in fstype_fail_nodes:
+                            fstype_fail_nodes.append(node.host_id)
                         recommendations.append(
                             self._create_recommendation(
-                                check_id="infra.storage.disk.data_usage",
-                                title="High Data Disk Usage",
-                                description=f"Node {self._get_node_identifier(node)} data disk is {data_usage_pct:.1f}% full",
-                                severity=Severity.CRITICAL,
-                                category="infrastructure",
-                                impact="Risk of write failures and compaction issues",
-                                recommendation="Add disk capacity or run cleanup operations",
-                                node_id=node.host_id,
-                                usage_percent=data_usage_pct,
-                                component="Storage",
-                            )
-                        )
-                    elif data_usage_pct > 70:
-                        data_usage_fail_nodes.append(node.host_id)
-                        recommendations.append(
-                            self._create_recommendation(
-                                check_id="infra.storage.disk.data_usage",
-                                title="Moderate Data Disk Usage",
-                                description=f"Node {self._get_node_identifier(node)} data disk is {data_usage_pct:.1f}% full",
+                                check_id="infra.storage.fs.data",
+                                title=f"Suboptimal Data Filesystem: {data_fstype}",
+                                description=f"Node {self._get_node_identifier(node)} uses {data_fstype} for data directory {data_dir} (mount: {mount_point})",
                                 severity=Severity.WARNING,
                                 category="infrastructure",
-                                impact="Approaching storage capacity limits",
-                                recommendation="Plan for additional storage capacity",
+                                impact="Potential performance degradation with non-XFS filesystem",
+                                recommendation="Consider using XFS filesystem for Cassandra data directories",
                                 node_id=node.host_id,
-                                usage_percent=data_usage_pct,
+                                current_fstype=data_fstype,
                                 component="Storage",
+                                mount_point=mount_point,
                             )
                         )
-                except (ValueError, TypeError):
-                    pass
+
+                if data_total and data_used:
+                    try:
+                        data_usage_pct = (int(data_used) / int(data_total)) * 100
+                        data_usage_seen = True
+                        if data_usage_pct > 85:
+                            if node.host_id not in data_usage_fail_nodes:
+                                data_usage_fail_nodes.append(node.host_id)
+                            recommendations.append(
+                                self._create_recommendation(
+                                    check_id="infra.storage.disk.data_usage",
+                                    title="High Data Disk Usage",
+                                    description=f"Node {self._get_node_identifier(node)} data disk {mount_point} is {data_usage_pct:.1f}% full",
+                                    severity=Severity.CRITICAL,
+                                    category="infrastructure",
+                                    impact="Risk of write failures and compaction issues",
+                                    recommendation="Add disk capacity or run cleanup operations",
+                                    node_id=node.host_id,
+                                    usage_percent=data_usage_pct,
+                                    component="Storage",
+                                    mount_point=mount_point,
+                                )
+                            )
+                        elif data_usage_pct > 70:
+                            if node.host_id not in data_usage_fail_nodes:
+                                data_usage_fail_nodes.append(node.host_id)
+                            recommendations.append(
+                                self._create_recommendation(
+                                    check_id="infra.storage.disk.data_usage",
+                                    title="Moderate Data Disk Usage",
+                                    description=f"Node {self._get_node_identifier(node)} data disk {mount_point} is {data_usage_pct:.1f}% full",
+                                    severity=Severity.WARNING,
+                                    category="infrastructure",
+                                    impact="Approaching storage capacity limits",
+                                    recommendation="Plan for additional storage capacity",
+                                    node_id=node.host_id,
+                                    usage_percent=data_usage_pct,
+                                    component="Storage",
+                                    mount_point=mount_point,
+                                )
+                            )
+                    except (ValueError, TypeError):
+                        pass
 
         if not fstype_data_seen:
             self._record_check(
@@ -608,7 +671,7 @@ class InfrastructureAnalyzer(BaseAnalyzer):
                 "Data directory uses XFS filesystem",
                 "host_disk_*/_fstype",
                 "no_data",
-                skipped_reason="host_disk_/srv/cassandra_fstype not reported by any node",
+                skipped_reason="No data directory filesystem type reported by any node",
             )
         elif fstype_fail_nodes:
             self._record_check(
@@ -654,15 +717,15 @@ class InfrastructureAnalyzer(BaseAnalyzer):
             self._record_check(
                 "infra.storage.disk.data_usage",
                 "Data directory disk usage is below the warn threshold",
-                "host_disk_/srv/cassandra_Total / _Used",
+                "host_disk_*/_Total / _Used",
                 "no_data",
-                skipped_reason="data directory disk usage not reported by any node",
+                skipped_reason="No data directory disk usage reported by any node",
             )
         elif data_usage_fail_nodes:
             self._record_check(
                 "infra.storage.disk.data_usage",
                 "Data directory disk usage is below the warn threshold",
-                "host_disk_/srv/cassandra_Total / _Used",
+                "host_disk_*/_Total / _Used",
                 "fail",
                 affected_nodes=data_usage_fail_nodes,
             )
@@ -670,7 +733,7 @@ class InfrastructureAnalyzer(BaseAnalyzer):
             self._record_check(
                 "infra.storage.disk.data_usage",
                 "Data directory disk usage is below the warn threshold",
-                "host_disk_/srv/cassandra_Total / _Used",
+                "host_disk_*/_Total / _Used",
                 "pass",
             )
 
@@ -780,41 +843,16 @@ class InfrastructureAnalyzer(BaseAnalyzer):
         swap_enabled_fail: List[str] = []
 
         for node in cluster_state.nodes.values():
-            swappiness = node.Details.get("host_sysctl_vm.swappiness")
-            if swappiness is not None:
-                try:
-                    swappiness_val = int(swappiness)
-                    swappiness_seen = True
-                    if swappiness_val > 1:
-                        swappiness_fail.append(node.host_id)
-                        recommendations.append(
-                            self._create_recommendation(
-                                check_id="infra.swap.swappiness",
-                                title="High vm.swappiness Setting",
-                                description=f"Node {self._get_node_identifier(node)} has vm.swappiness={swappiness_val}",
-                                severity=Severity.WARNING,
-                                category="infrastructure",
-                                impact="Cassandra may swap to disk causing severe performance degradation",
-                                recommendation="Set vm.swappiness=1 in /etc/sysctl.conf or /etc/sysctl.d/ and run 'sysctl -p'",
-                                current_value=str(swappiness_val),
-                                node_id=node.host_id,
-                                current_swappiness=swappiness_val,
-                                component="Memory",
-                                recommended_value="1",
-                                config_location="/etc/sysctl.conf or /etc/sysctl.d/",
-                            )
-                        )
-                except (ValueError, TypeError):
-                    pass
+            swap_is_enabled = False
 
-            swap_free = node.Details.get("host_swapmem_Free")
-            swap_total = node.Details.get("host_swapmem_Total")
-            if swap_total and swap_free:
+            if "host_swapmem_Free" in node.Details and "host_swapmem_Total" in node.Details:
                 try:
-                    total_val = int(swap_total)
-                    free_val = int(swap_free)
+                    total_val = int(str(node.Details.get("host_swapmem_Total")))
+                    free_val = int(str(node.Details.get("host_swapmem_Free")))
                     swap_usage_seen = True
+                    swap_enabled_seen = True
                     if total_val > 0:
+                        swap_is_enabled = True
                         swap_used_pct = ((total_val - free_val) / total_val) * 100
                         if swap_used_pct > 5:
                             swap_usage_fail.append(node.host_id)
@@ -840,12 +878,12 @@ class InfrastructureAnalyzer(BaseAnalyzer):
                                 self._create_recommendation(
                                     check_id="infra.swap.enabled",
                                     title="Swap Enabled",
-                                    description=f"Node {self._get_node_identifier(node)} has {total_val/1024/1024:.0f}MB swap configured",
+                                    description=f"Node {self._get_node_identifier(node)} has {total_val / 1024 / 1024:.0f}MB swap configured",
                                     severity=Severity.WARNING,
                                     category="infrastructure",
                                     impact="Potential for performance issues if swap is used",
                                     recommendation="Consider disabling swap entirely for Cassandra nodes",
-                                    current_value=f"{total_val/1024/1024:.0f}MB swap",
+                                    current_value=f"{total_val / 1024 / 1024:.0f}MB swap",
                                     node_id=node.host_id,
                                     swap_size_mb=total_val / 1024 / 1024,
                                     component="Memory",
@@ -855,28 +893,59 @@ class InfrastructureAnalyzer(BaseAnalyzer):
                 except (ValueError, TypeError):
                     pass
 
+            # Only check the swappiness settings if swap is enabled, otherwise this is redundant and creates false positives
+            if swap_is_enabled:
+                swappiness = node.Details.get("host_sysctl_vm.swappiness")
+                if swappiness is not None:
+                    try:
+                        swappiness_val = int(swappiness)
+                        swappiness_seen = True
+                        if swappiness_val > 1:
+                            swappiness_fail.append(node.host_id)
+                            recommendations.append(
+                                self._create_recommendation(
+                                    check_id="infra.swap.swappiness",
+                                    title="High vm.swappiness Setting",
+                                    description=f"Node {self._get_node_identifier(node)} has vm.swappiness={swappiness_val}",
+                                    severity=Severity.WARNING,
+                                    category="infrastructure",
+                                    impact="Cassandra may swap to disk causing severe performance degradation",
+                                    recommendation="Set vm.swappiness=1 in /etc/sysctl.conf or /etc/sysctl.d/ and run 'sysctl -p'",
+                                    current_value=str(swappiness_val),
+                                    node_id=node.host_id,
+                                    current_swappiness=swappiness_val,
+                                    component="Memory",
+                                    recommended_value="1",
+                                    config_location="/etc/sysctl.conf or /etc/sysctl.d/",
+                                )
+                            )
+                    except (ValueError, TypeError):
+                        pass
+            else:
+                swappiness_seen = True
+
         for check_id, description, source, seen, fails in (
-            (
-                "infra.swap.swappiness",
-                "vm.swappiness ≤ 1",
-                "host_sysctl_vm.swappiness",
-                swappiness_seen,
-                swappiness_fail,
-            ),
-            (
-                "infra.swap.usage",
-                "Active swap usage is below 5%",
-                "host_swapmem_Free / host_swapmem_Total",
-                swap_usage_seen,
-                swap_usage_fail,
-            ),
-            (
-                "infra.swap.enabled",
-                "Swap is disabled (no swap configured)",
-                "host_swapmem_Total",
-                swap_enabled_seen,
-                swap_enabled_fail,
-            ),
+                (
+                        "infra.swap.swappiness",
+                        "vm.swappiness ≤ 1",
+                        "host_sysctl_vm.swappiness",
+                        swappiness_seen,
+                        swappiness_fail,
+                ),
+                (
+                        "infra.swap.usage",
+                        "Active swap usage is below 5%",
+                        "host_swapmem_Free / host_swapmem_Total",
+                        swap_usage_seen,
+                        swap_usage_fail,
+                ),
+                (
+                        "infra.swap.enabled",
+                        "Swap is disabled (no swap configured)",
+                        "host_swapmem_Total",
+                        swap_enabled_seen,
+                        swap_enabled_fail,
+                ),
         ):
             if not seen:
                 self._record_check(
@@ -901,9 +970,12 @@ class InfrastructureAnalyzer(BaseAnalyzer):
         max_map_fail: List[str] = []
 
         sysctl_state: Dict[str, Dict[str, Any]] = {
-            "net.core.rmem_max": {"min_value": 16777216, "description": "socket receive buffer", "component": "Network", "seen": False, "fail": []},
-            "net.core.wmem_max": {"min_value": 16777216, "description": "socket send buffer", "component": "Network", "seen": False, "fail": []},
-            "net.core.netdev_max_backlog": {"min_value": 5000, "description": "network device backlog", "component": "Network", "seen": False, "fail": []},
+            "net.core.rmem_max": {"min_value": 16777216, "description": "socket receive buffer", "component": "Network",
+                                  "seen": False, "fail": []},
+            "net.core.wmem_max": {"min_value": 16777216, "description": "socket send buffer", "component": "Network",
+                                  "seen": False, "fail": []},
+            "net.core.netdev_max_backlog": {"min_value": 5000, "description": "network device backlog",
+                                            "component": "Network", "seen": False, "fail": []},
         }
 
         for node in cluster_state.nodes.values():
