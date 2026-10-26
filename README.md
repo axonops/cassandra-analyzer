@@ -5,7 +5,7 @@
 <h1 align="center">Cassandra® AxonOps Analyzer</h1>
 
 <p align="center">
-  <strong>Comprehensive Cassandra Cluster Analysis Tool Powered by AxonOps™</strong>
+  <strong>Comprehensive Cassandra Cluster Analysis Tool Powered by AxonOps®</strong>
 </p>
 
 > ⚠️ **DEVELOPMENT STATUS**: This project is currently under active development and is not yet ready for production use. Features may change, and stability is not guaranteed. Please wait for the official release announcement before using in production environments.
