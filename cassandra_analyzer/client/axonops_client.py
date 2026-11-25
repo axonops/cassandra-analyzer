@@ -22,9 +22,12 @@ logger = structlog.get_logger()
 class AxonOpsClient:
     """Client for interacting with AxonOps API"""
     
-    def __init__(self, api_url: str, token: str, timeout: int = 30, max_retries: int = 3):
+    def __init__(self, api_url: str, token: str, timeout: int = 30, max_retries: int = 3,
+                 token_type: str = "Bearer"):
         self.api_url = api_url.rstrip('/')
         self.token = token
+        # "Bearer" for JWTs; "AxonApi" for axon-server API keys (auth-enabled on-prem installs)
+        self.token_type = token_type
         self.timeout = timeout
         self.org = None  # Will be set when making org-specific requests
         
@@ -41,7 +44,7 @@ class AxonOpsClient:
         
         # Set authorization header
         self.session.headers.update({
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"{token_type} {token}",
             "Content-Type": "application/json",
             "User-Agent": "axonops-analyzer/1.0.0",
         })
@@ -262,7 +265,7 @@ class AxonOpsClient:
         # Generate curl equivalent for debugging
         import json
         curl_command = f"""curl -X POST "{url_with_params}" \\
-  -H "Authorization: Bearer {self.token}" \\
+  -H "Authorization: {self.token_type} <REDACTED>" \\
   -H "Content-Type: application/json" \\
   -H "X-Grafana-Org-Id: {org}" \\
   -d '{json.dumps(payload)}' \\

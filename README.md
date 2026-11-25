@@ -283,6 +283,9 @@ Options:
 ### Environment Variables
 
 - `AXONOPS_API_TOKEN` - AxonOps API token (alternative to config file)
+- `AXONOPS_API_TOKEN_TYPE` - `Bearer` (default, JWT) or `AxonApi` for an API key created in an axon-server
+  with authentication enabled (sent as `Authorization: AxonApi <key>`); `axonops.token_type` in the config
+  file does the same
 - `CA_LOG_LEVEL` - Log level (DEBUG, INFO, WARNING, ERROR)
 
 ### Configuration Reference

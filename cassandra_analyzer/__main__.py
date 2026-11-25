@@ -81,6 +81,10 @@ def main(config, output_dir, verbose, pdf, stdout_format):
         env_token = os.getenv('AXONOPS_API_TOKEN')
         if env_token:
             config_data.setdefault('axonops', {})['token'] = env_token
+    if not config_data.get('axonops', {}).get('token_type'):
+        env_type = os.getenv('AXONOPS_API_TOKEN_TYPE')
+        if env_type:
+            config_data.setdefault('axonops', {})['token_type'] = env_type
 
     # Validate required configuration
     if 'cluster' not in config_data:
@@ -113,7 +117,8 @@ def main(config, output_dir, verbose, pdf, stdout_format):
     # Initialize analyzer
     client = AxonOpsClient(
         api_url=analyzer_config.axonops.api_url,
-        token=analyzer_config.axonops.token
+        token=analyzer_config.axonops.token,
+        token_type=analyzer_config.axonops.token_type,
     )
 
     analyzer = CassandraAnalyzer(

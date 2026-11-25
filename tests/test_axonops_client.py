@@ -220,3 +220,33 @@ class TestAxonOpsClient:
         assert client.session is not None
         assert hasattr(client.session, 'request')
         assert "Authorization" in client.session.headers
+
+
+class TestTokenType:
+    """Authorization scheme for axon-server API keys."""
+
+    def test_axonapi_scheme(self):
+        client = AxonOpsClient(api_url="http://localhost:9090", token="key123", token_type="AxonApi")
+        assert client.session.headers["Authorization"] == "AxonApi key123"
+
+    def test_config_default_and_validation(self):
+        import pydantic
+        from cassandra_analyzer.config import AxonOpsConfig
+
+        assert AxonOpsConfig(token="t").token_type == "Bearer"
+        assert AxonOpsConfig(token="t", token_type="AxonApi").token_type == "AxonApi"
+        with pytest.raises(pydantic.ValidationError):
+            AxonOpsConfig(token="t", token_type="Basic")
+
+    def test_events_request_log_does_not_contain_token(self):
+        from datetime import datetime, timedelta, timezone
+
+        client = AxonOpsClient(api_url="http://localhost:9090", token="secret-key-123", token_type="AxonApi")
+        end = datetime.now(timezone.utc)
+        with patch("cassandra_analyzer.client.axonops_client.logger") as log, \
+                patch.object(client, "_request", return_value=[]):
+            client.get_events("org", "cassandra", "c", end - timedelta(hours=1), end)
+        logged = " ".join(str(c) for c in log.info.call_args_list)
+        assert "secret-key-123" not in logged
+        assert "AxonApi <REDACTED>" in logged
+
